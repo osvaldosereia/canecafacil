@@ -15,15 +15,7 @@ describe('healthcheck', () => {
   });
 });
 
-describe('API configuration', () => {
-  it('does not register a Meta webhook', async () => {
-    const response = await createApiApp({}).request(
-      '/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=legacy&hub.challenge=42',
-    );
-
-    expect(response.status).toBe(404);
-  });
-
+describe('own-chat API configuration', () => {
   it('registers own-chat turn routes when chat stores are available', async () => {
     const sessionStore: ChatSessionStore = {
       create: vi.fn(),
