@@ -7,16 +7,27 @@ import { createSupabaseChatSessionStore } from './chat/supabase-session-store.js
 import { registerChatTurnRoutes } from './chat/turn-routes.js';
 import type { ApiConfig } from './config.js';
 import { createServerSupabaseClient } from './lib/supabase.js';
+import type { ChatMediaStore } from './media/media-store.js';
+import { createSupabaseChatMediaStore } from './media/supabase-media-store.js';
+import { registerChatUploadRoutes } from './media/upload-routes.js';
 
 export type ApiAppConfig = Partial<ApiConfig>;
 
 export interface ApiAppDependencies {
   sessionStore?: ChatSessionStore;
   messageStore?: ChatMessageStore;
+  mediaStore?: ChatMediaStore;
 }
 
 function canCreateSupabaseStore(config: ApiAppConfig): boolean {
   return Boolean(config.supabaseUrl?.trim() && config.supabaseSecretKey?.trim());
+}
+
+function createSupabaseClient(config: ApiAppConfig) {
+  return createServerSupabaseClient({
+    url: config.supabaseUrl!,
+    secretKey: config.supabaseSecretKey!,
+  });
 }
 
 function resolveSessionStore(
@@ -25,13 +36,7 @@ function resolveSessionStore(
 ): ChatSessionStore | undefined {
   if (dependencies.sessionStore) return dependencies.sessionStore;
   if (!canCreateSupabaseStore(config)) return undefined;
-
-  return createSupabaseChatSessionStore(
-    createServerSupabaseClient({
-      url: config.supabaseUrl!,
-      secretKey: config.supabaseSecretKey!,
-    }),
-  );
+  return createSupabaseChatSessionStore(createSupabaseClient(config));
 }
 
 function resolveMessageStore(
@@ -40,13 +45,16 @@ function resolveMessageStore(
 ): ChatMessageStore | undefined {
   if (dependencies.messageStore) return dependencies.messageStore;
   if (!canCreateSupabaseStore(config)) return undefined;
+  return createSupabaseChatMessageStore(createSupabaseClient(config));
+}
 
-  return createSupabaseChatMessageStore(
-    createServerSupabaseClient({
-      url: config.supabaseUrl!,
-      secretKey: config.supabaseSecretKey!,
-    }),
-  );
+function resolveMediaStore(
+  config: ApiAppConfig,
+  dependencies: ApiAppDependencies,
+): ChatMediaStore | undefined {
+  if (dependencies.mediaStore) return dependencies.mediaStore;
+  if (!canCreateSupabaseStore(config)) return undefined;
+  return createSupabaseChatMediaStore(createSupabaseClient(config));
 }
 
 export function createApiApp(
@@ -64,6 +72,7 @@ export function createApiApp(
 
   const sessionStore = resolveSessionStore(config, dependencies);
   const messageStore = resolveMessageStore(config, dependencies);
+  const mediaStore = resolveMediaStore(config, dependencies);
 
   if (
     sessionStore &&
@@ -84,6 +93,15 @@ export function createApiApp(
       registerChatTurnRoutes(app, {
         sessionStore,
         messageStore,
+        chatOrigin: config.chatOrigin,
+        sessionCookieName: config.sessionCookieName,
+      });
+    }
+
+    if (mediaStore) {
+      registerChatUploadRoutes(app, {
+        sessionStore,
+        mediaStore,
         chatOrigin: config.chatOrigin,
         sessionCookieName: config.sessionCookieName,
       });
