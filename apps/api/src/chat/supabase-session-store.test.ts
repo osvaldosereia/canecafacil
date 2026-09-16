@@ -1,5 +1,10 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { describe, expect, it, vi } from 'vitest';
 import { createSupabaseChatSessionStore } from './supabase-session-store.js';
+
+function asSupabaseClient(value: unknown): SupabaseClient {
+  return value as SupabaseClient;
+}
 
 describe('Supabase chat session store', () => {
   it('creates visitor, session and conversation through the atomic RPC', async () => {
@@ -13,7 +18,7 @@ describe('Supabase chat session store', () => {
       ],
       error: null,
     });
-    const client = { rpc, from: vi.fn() };
+    const client = asSupabaseClient({ rpc, from: vi.fn() });
     const store = createSupabaseChatSessionStore(client);
     const expiresAt = new Date('2026-10-16T12:00:00.000Z');
 
@@ -50,14 +55,14 @@ describe('Supabase chat session store', () => {
     const visitorEq = vi.fn().mockReturnValue({ eq: statusEq });
     const conversationSelect = vi.fn().mockReturnValue({ eq: visitorEq });
 
-    const client = {
+    const client = asSupabaseClient({
       rpc: vi.fn(),
       from: vi.fn((table: string) => {
         if (table === 'chat_sessions') return { select: sessionSelect };
         if (table === 'conversations') return { select: conversationSelect };
         throw new Error(`unexpected table ${table}`);
       }),
-    };
+    });
     const store = createSupabaseChatSessionStore(client);
 
     await expect(
@@ -91,7 +96,7 @@ describe('Supabase chat session store', () => {
         revoked_at: '2026-09-16T10:00:00.000Z',
       },
     ]) {
-      const client = {
+      const client = asSupabaseClient({
         rpc: vi.fn(),
         from: vi.fn((table: string) => {
           if (table === 'conversations') {
@@ -106,7 +111,7 @@ describe('Supabase chat session store', () => {
             }),
           };
         }),
-      };
+      });
 
       const store = createSupabaseChatSessionStore(client);
       await expect(
