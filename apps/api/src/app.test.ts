@@ -16,6 +16,30 @@ describe('healthcheck', () => {
 });
 
 describe('own-chat API configuration', () => {
+  it('allows credentialed browser requests from the configured chat origin', async () => {
+    const app = createApiApp({
+      chatOrigin: 'https://chat.canecafacil.test',
+      nodeEnv: 'test',
+      sessionCookieName: 'cf_session',
+      sessionTtlDays: 30,
+    });
+
+    const response = await app.request('/v1/chat/session', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://chat.canecafacil.test',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type',
+      },
+    });
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(
+      'https://chat.canecafacil.test',
+    );
+    expect(response.headers.get('Access-Control-Allow-Credentials')).toBe('true');
+  });
+
   it('registers own-chat turn routes when chat stores are available', async () => {
     const sessionStore: ChatSessionStore = {
       create: vi.fn(),
