@@ -3,12 +3,12 @@ import type { Hono } from 'hono';
 import {
   processInboundMessage,
   type InboundMessageStore,
-} from './ingest';
+} from './ingest.js';
 import {
   isWhatsappWebhookEnvelope,
   normalizeWhatsappEvent,
   type NormalizedInboundMessage,
-} from './normalize-event';
+} from './normalize-event.js';
 
 export interface WhatsappWebhookConfig {
   verifyToken: string;

@@ -1,7 +1,7 @@
 import type {
   OutboundMessageRecordInput,
   OutboundMessageStore,
-} from './send';
+} from './send.js';
 
 interface SupabaseSingleResult {
   data: { id?: unknown } | null;

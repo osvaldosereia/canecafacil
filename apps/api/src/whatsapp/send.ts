@@ -3,7 +3,7 @@ import type {
   WhatsAppImageInput,
   WhatsAppSendResult,
   WhatsAppTemplateInput,
-} from './client';
+} from './client.js';
 
 export type WhatsAppOutboundClient = WhatsAppClient;
 

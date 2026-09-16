@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
-import type { ApiConfig } from './config';
-import { createServerSupabaseClient } from './lib/supabase';
-import type { InboundMessageStore } from './whatsapp/ingest';
-import type { NormalizedInboundMessage } from './whatsapp/normalize-event';
-import { createSupabaseWhatsAppIngestStore } from './whatsapp/supabase-ingest-store';
-import { registerWhatsappWebhook } from './whatsapp/webhook';
+import type { ApiConfig } from './config.js';
+import { createServerSupabaseClient } from './lib/supabase.js';
+import type { InboundMessageStore } from './whatsapp/ingest.js';
+import type { NormalizedInboundMessage } from './whatsapp/normalize-event.js';
+import { createSupabaseWhatsAppIngestStore } from './whatsapp/supabase-ingest-store.js';
+import { registerWhatsappWebhook } from './whatsapp/webhook.js';
 
 export type ApiAppConfig = Partial<ApiConfig>;
 

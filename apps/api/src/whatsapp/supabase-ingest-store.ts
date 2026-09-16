@@ -1,5 +1,5 @@
-import type { InboundMessageClaim, InboundMessageStore } from './ingest';
-import type { NormalizedInboundMessage } from './normalize-event';
+import type { InboundMessageClaim, InboundMessageStore } from './ingest.js';
+import type { NormalizedInboundMessage } from './normalize-event.js';
 
 interface RpcResult {
   data: unknown;
