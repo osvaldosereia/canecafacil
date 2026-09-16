@@ -24,17 +24,18 @@ jobs:
         run: npm test
       - name: Typecheck
         run: npm run typecheck
+      - name: Reject active Meta dependencies
+        run: npm run check:no-meta
       - name: Build
         run: npm run build
       - name: Smoke test production API
         env:
           SUPABASE_URL: https://example.supabase.co
           SUPABASE_SECRET_KEY: sb_secret_test_placeholder
-          WHATSAPP_VERIFY_TOKEN: test-verify-token
-          WHATSAPP_ACCESS_TOKEN: test-access-token
-          WHATSAPP_PHONE_NUMBER_ID: '123456789'
-          WHATSAPP_GRAPH_VERSION: v23.0
-          WHATSAPP_APP_SECRET: test-app-secret
+          CHAT_ORIGIN: http://localhost:5174
+          NODE_ENV: test
+          SESSION_COOKIE_NAME: cf_session
+          SESSION_TTL_DAYS: '30'
           PORT: '3100'
         run: |
           set -euo pipefail

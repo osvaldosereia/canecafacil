@@ -5,9 +5,11 @@
   "engines": { "node": ">=24 <25" },
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present"
+    "build:core": "npm run build --workspace @caneca-facil/core",
+    "test": "npm run build:core && npm run test --workspaces --if-present",
+    "typecheck": "npm run build:core && npm run typecheck --workspaces --if-present",
+    "check:no-meta": "node scripts/check-no-active-meta.mjs",
+    "build": "npm run build:core && npm run build --workspace @caneca-facil/admin && npm run build --workspace @caneca-facil/chat && npm run build --workspace @caneca-facil/api"
   },
   "devDependencies": {
     "typescript": "5.9.3",

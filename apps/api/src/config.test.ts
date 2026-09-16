@@ -1,31 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import { loadApiConfig } from './config';
 
-const requiredEnv = {
+const ownChatEnv = {
   SUPABASE_URL: 'https://example.supabase.co',
   SUPABASE_SECRET_KEY: 'sb_secret_test',
-  WHATSAPP_VERIFY_TOKEN: 'verify-test',
-  WHATSAPP_ACCESS_TOKEN: 'access-test',
-  WHATSAPP_PHONE_NUMBER_ID: '123456789',
-  WHATSAPP_GRAPH_VERSION: 'v99.0',
+  CHAT_ORIGIN: 'http://localhost:5174',
 };
 
 describe('loadApiConfig', () => {
-  it('loads the canonical WhatsApp and Supabase server configuration', () => {
-    expect(
-      loadApiConfig({
-        ...requiredEnv,
-        WHATSAPP_APP_SECRET: 'app-secret-test',
-        PORT: '4100',
-      }),
-    ).toEqual({
+  it('loads the own-chat runtime without Meta variables', () => {
+    expect(loadApiConfig(ownChatEnv)).toEqual({
       supabaseUrl: 'https://example.supabase.co',
       supabaseSecretKey: 'sb_secret_test',
-      whatsappVerifyToken: 'verify-test',
-      whatsappAccessToken: 'access-test',
-      whatsappPhoneNumberId: '123456789',
-      whatsappGraphVersion: 'v99.0',
-      whatsappAppSecret: 'app-secret-test',
+      chatOrigin: 'http://localhost:5174',
+      nodeEnv: 'development',
+      sessionCookieName: 'cf_session',
+      sessionTtlDays: 30,
+      port: 3000,
+    });
+  });
+
+  it('loads explicit own-chat runtime overrides', () => {
+    expect(
+      loadApiConfig({
+        ...ownChatEnv,
+        NODE_ENV: 'production',
+        SESSION_COOKIE_NAME: 'custom_session',
+        SESSION_TTL_DAYS: '14',
+        PORT: '4100',
+      }),
+    ).toMatchObject({
+      nodeEnv: 'production',
+      sessionCookieName: 'custom_session',
+      sessionTtlDays: 14,
       port: 4100,
     });
   });
@@ -33,32 +40,27 @@ describe('loadApiConfig', () => {
   it('fails fast when a required server variable is missing', () => {
     expect(() =>
       loadApiConfig({
-        ...requiredEnv,
+        ...ownChatEnv,
         SUPABASE_SECRET_KEY: '',
       }),
     ).toThrow('SUPABASE_SECRET_KEY');
   });
 
-  it('requires an explicit Graph API version instead of freezing one in code', () => {
-    const { WHATSAPP_GRAPH_VERSION: _removed, ...withoutGraphVersion } = requiredEnv;
-    expect(() => loadApiConfig(withoutGraphVersion)).toThrow('WHATSAPP_GRAPH_VERSION');
-  });
-
-  it('does not silently use META_VERIFY_TOKEN as the verify token', () => {
-    const { WHATSAPP_VERIFY_TOKEN: _removed, ...withoutCanonical } = requiredEnv;
-
+  it('rejects an invalid session TTL', () => {
     expect(() =>
       loadApiConfig({
-        ...withoutCanonical,
-        META_VERIFY_TOKEN: 'legacy-token',
+        ...ownChatEnv,
+        SESSION_TTL_DAYS: '0',
       }),
-    ).toThrow('WHATSAPP_VERIFY_TOKEN');
+    ).toThrow('SESSION_TTL_DAYS must be an integer between 1 and 365');
   });
 
-  it('uses port 3000 and no app secret by default', () => {
-    expect(loadApiConfig(requiredEnv)).toMatchObject({
-      port: 3000,
-      whatsappAppSecret: undefined,
-    });
+  it('rejects an unsupported NODE_ENV', () => {
+    expect(() =>
+      loadApiConfig({
+        ...ownChatEnv,
+        NODE_ENV: 'staging',
+      }),
+    ).toThrow('NODE_ENV must be development, test, or production');
   });
 });

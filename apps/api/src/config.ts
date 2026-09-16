@@ -1,11 +1,10 @@
 export interface ApiConfig {
   supabaseUrl: string;
   supabaseSecretKey: string;
-  whatsappVerifyToken: string;
-  whatsappAccessToken: string;
-  whatsappPhoneNumberId: string;
-  whatsappGraphVersion: string;
-  whatsappAppSecret?: string;
+  chatOrigin: string;
+  nodeEnv: 'development' | 'test' | 'production';
+  sessionCookieName: string;
+  sessionTtlDays: number;
   port: number;
 }
 
@@ -35,15 +34,38 @@ function parsePort(value: string | undefined): number {
   return port;
 }
 
+function parseNodeEnv(
+  value: string | undefined,
+): 'development' | 'test' | 'production' {
+  const nodeEnv = value?.trim() || 'development';
+  if (
+    nodeEnv !== 'development' &&
+    nodeEnv !== 'test' &&
+    nodeEnv !== 'production'
+  ) {
+    throw new Error('NODE_ENV must be development, test, or production');
+  }
+  return nodeEnv;
+}
+
+function parseSessionTtlDays(value: string | undefined): number {
+  if (!value?.trim()) return 30;
+
+  const days = Number(value);
+  if (!Number.isInteger(days) || days < 1 || days > 365) {
+    throw new Error('SESSION_TTL_DAYS must be an integer between 1 and 365');
+  }
+  return days;
+}
+
 export function loadApiConfig(env: ApiEnvironment): ApiConfig {
   return {
     supabaseUrl: requireValue(env, 'SUPABASE_URL'),
     supabaseSecretKey: requireValue(env, 'SUPABASE_SECRET_KEY'),
-    whatsappVerifyToken: requireValue(env, 'WHATSAPP_VERIFY_TOKEN'),
-    whatsappAccessToken: requireValue(env, 'WHATSAPP_ACCESS_TOKEN'),
-    whatsappPhoneNumberId: requireValue(env, 'WHATSAPP_PHONE_NUMBER_ID'),
-    whatsappGraphVersion: requireValue(env, 'WHATSAPP_GRAPH_VERSION'),
-    whatsappAppSecret: optionalValue(env, 'WHATSAPP_APP_SECRET'),
+    chatOrigin: requireValue(env, 'CHAT_ORIGIN'),
+    nodeEnv: parseNodeEnv(env.NODE_ENV),
+    sessionCookieName: optionalValue(env, 'SESSION_COOKIE_NAME') ?? 'cf_session',
+    sessionTtlDays: parseSessionTtlDays(env.SESSION_TTL_DAYS),
     port: parsePort(env.PORT),
   };
 }

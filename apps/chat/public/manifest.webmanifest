@@ -1,0 +1,10 @@
+{
+  "name": "Caneca Fácil",
+  "short_name": "Caneca Fácil",
+  "description": "Crie sua caneca conversando.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#faf8f5",
+  "theme_color": "#faf8f5",
+  "lang": "pt-BR"
+}
