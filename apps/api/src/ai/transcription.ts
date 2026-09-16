@@ -18,18 +18,18 @@ export interface TranscriptionProvider {
 
 export interface StoredAudioTranscript {
   id: string;
-  projectMediaId: string;
+  mediaAssetId: string;
   text: string;
   language: string | null;
   model: string | null;
 }
 
 export interface AudioTranscriptionStore {
-  findByProjectMediaId(
-    projectMediaId: string,
+  findByMediaAssetId(
+    mediaAssetId: string,
   ): Promise<StoredAudioTranscript | null>;
   create(input: {
-    projectMediaId: string;
+    mediaAssetId: string;
     text: string;
     language: string | null;
     model: string;
@@ -37,7 +37,7 @@ export interface AudioTranscriptionStore {
 }
 
 export interface TranscribeAudioInput extends TranscriptionProviderInput {
-  projectMediaId: string;
+  mediaAssetId: string;
 }
 
 export interface AudioTranscript extends StoredAudioTranscript {
@@ -51,8 +51,8 @@ export async function transcribeAudio(
     store: AudioTranscriptionStore;
   },
 ): Promise<AudioTranscript> {
-  const existing = await dependencies.store.findByProjectMediaId(
-    input.projectMediaId,
+  const existing = await dependencies.store.findByMediaAssetId(
+    input.mediaAssetId,
   );
 
   if (existing) {
@@ -69,7 +69,7 @@ export async function transcribeAudio(
   if (!text) throw new Error('Audio transcription returned empty text');
 
   const stored = await dependencies.store.create({
-    projectMediaId: input.projectMediaId,
+    mediaAssetId: input.mediaAssetId,
     text,
     language: transcript.language,
     model: transcript.model,
@@ -149,7 +149,7 @@ function mapStoredTranscript(
 
   if (
     typeof row.id !== 'string' ||
-    typeof row.project_media_id !== 'string' ||
+    typeof row.media_asset_id !== 'string' ||
     typeof row.transcription !== 'string'
   ) {
     throw new Error('Audio transcription database row was invalid');
@@ -157,7 +157,7 @@ function mapStoredTranscript(
 
   return {
     id: row.id,
-    projectMediaId: row.project_media_id,
+    mediaAssetId: row.media_asset_id,
     text: row.transcription,
     language: typeof row.language === 'string' ? row.language : null,
     model: typeof row.model === 'string' ? row.model : null,
@@ -167,13 +167,13 @@ function mapStoredTranscript(
 export function createSupabaseAudioTranscriptionStore(
   client: AudioTranscriptionSupabaseClient,
 ): AudioTranscriptionStore {
-  const findByProjectMediaId = async (
-    projectMediaId: string,
+  const findByMediaAssetId = async (
+    mediaAssetId: string,
   ): Promise<StoredAudioTranscript | null> => {
     const { data, error } = await client
       .from('audio_transcriptions')
-      .select('id, project_media_id, transcription, language, model')
-      .eq('project_media_id', projectMediaId)
+      .select('id, media_asset_id, transcription, language, model')
+      .eq('media_asset_id', mediaAssetId)
       .maybeSingle();
 
     if (error) throw new Error('Audio transcription lookup failed');
@@ -181,21 +181,21 @@ export function createSupabaseAudioTranscriptionStore(
   };
 
   return {
-    findByProjectMediaId,
+    findByMediaAssetId,
     async create(input) {
       const { data, error } = await client
         .from('audio_transcriptions')
         .insert({
-          project_media_id: input.projectMediaId,
+          media_asset_id: input.mediaAssetId,
           transcription: input.text,
           language: input.language,
           model: input.model,
         })
-        .select('id, project_media_id, transcription, language, model')
+        .select('id, media_asset_id, transcription, language, model')
         .single();
 
       if (error?.code === '23505') {
-        const existing = await findByProjectMediaId(input.projectMediaId);
+        const existing = await findByMediaAssetId(input.mediaAssetId);
         if (existing) return existing;
       }
 
