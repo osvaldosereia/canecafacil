@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { loadApiConfig } from './config';
 
-const requiredEnv = {
+const baseEnv = {
   SUPABASE_URL: 'https://example.supabase.co',
   SUPABASE_SECRET_KEY: 'sb_secret_test',
+};
+
+const whatsappEnv = {
   WHATSAPP_VERIFY_TOKEN: 'verify-test',
   WHATSAPP_ACCESS_TOKEN: 'access-test',
   WHATSAPP_PHONE_NUMBER_ID: '123456789',
@@ -11,54 +14,77 @@ const requiredEnv = {
 };
 
 describe('loadApiConfig', () => {
-  it('loads the canonical WhatsApp and Supabase server configuration', () => {
+  it('loads simulator-capable config without WhatsApp variables', () => {
     expect(
       loadApiConfig({
-        ...requiredEnv,
-        WHATSAPP_APP_SECRET: 'app-secret-test',
-        PORT: '4100',
+        ...baseEnv,
+        OPENAI_API_KEY: 'sk-test',
       }),
-    ).toEqual({
+    ).toMatchObject({
       supabaseUrl: 'https://example.supabase.co',
       supabaseSecretKey: 'sb_secret_test',
+      openaiApiKey: 'sk-test',
+      openaiBriefingModel: 'gpt-5.6-luna',
+      whatsappVerifyToken: undefined,
+      whatsappAccessToken: undefined,
+      whatsappPhoneNumberId: undefined,
+      whatsappGraphVersion: undefined,
+      port: 3000,
+    });
+  });
+
+  it('loads WhatsApp capability when canonical variables are present', () => {
+    expect(
+      loadApiConfig({
+        ...baseEnv,
+        ...whatsappEnv,
+        WHATSAPP_APP_SECRET: 'app-secret-test',
+        OPENAI_BRIEFING_MODEL: 'briefing-model-test',
+        ADMIN_ORIGIN: 'https://admin.example.com',
+        PORT: '4100',
+      }),
+    ).toMatchObject({
       whatsappVerifyToken: 'verify-test',
       whatsappAccessToken: 'access-test',
       whatsappPhoneNumberId: '123456789',
       whatsappGraphVersion: 'v99.0',
       whatsappAppSecret: 'app-secret-test',
+      openaiBriefingModel: 'briefing-model-test',
+      adminOrigin: 'https://admin.example.com',
       port: 4100,
     });
   });
 
-  it('fails fast when a required server variable is missing', () => {
+  it('keeps Supabase server credentials required', () => {
     expect(() =>
       loadApiConfig({
-        ...requiredEnv,
+        ...baseEnv,
         SUPABASE_SECRET_KEY: '',
       }),
     ).toThrow('SUPABASE_SECRET_KEY');
   });
 
-  it('requires an explicit Graph API version instead of freezing one in code', () => {
-    const { WHATSAPP_GRAPH_VERSION: _removed, ...withoutGraphVersion } = requiredEnv;
-    expect(() => loadApiConfig(withoutGraphVersion)).toThrow('WHATSAPP_GRAPH_VERSION');
-  });
-
-  it('does not silently use META_VERIFY_TOKEN as the verify token', () => {
-    const { WHATSAPP_VERIFY_TOKEN: _removed, ...withoutCanonical } = requiredEnv;
-
-    expect(() =>
+  it('does not silently use legacy META variables', () => {
+    expect(
       loadApiConfig({
-        ...withoutCanonical,
+        ...baseEnv,
         META_VERIFY_TOKEN: 'legacy-token',
       }),
-    ).toThrow('WHATSAPP_VERIFY_TOKEN');
+    ).toMatchObject({
+      whatsappVerifyToken: undefined,
+    });
   });
 
-  it('uses port 3000 and no app secret by default', () => {
-    expect(loadApiConfig(requiredEnv)).toMatchObject({
-      port: 3000,
-      whatsappAppSecret: undefined,
+  it('allows partial WhatsApp configuration without blocking server startup', () => {
+    expect(
+      loadApiConfig({
+        ...baseEnv,
+        WHATSAPP_ACCESS_TOKEN: 'access-test',
+      }),
+    ).toMatchObject({
+      whatsappAccessToken: 'access-test',
+      whatsappVerifyToken: undefined,
+      whatsappGraphVersion: undefined,
     });
   });
 });
