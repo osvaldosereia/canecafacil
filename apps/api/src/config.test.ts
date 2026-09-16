@@ -5,6 +5,8 @@ const ownChatEnv = {
   SUPABASE_URL: 'https://example.supabase.co',
   SUPABASE_SECRET_KEY: 'sb_secret_test',
   CHAT_ORIGIN: 'http://localhost:5174',
+  OPENAI_API_KEY: 'sk-test-placeholder',
+  OPENAI_CONVERSATION_MODEL: 'gpt-5.6-luna',
 };
 
 describe('loadApiConfig', () => {
@@ -13,6 +15,8 @@ describe('loadApiConfig', () => {
       supabaseUrl: 'https://example.supabase.co',
       supabaseSecretKey: 'sb_secret_test',
       chatOrigin: 'http://localhost:5174',
+      openaiApiKey: 'sk-test-placeholder',
+      openaiConversationModel: 'gpt-5.6-luna',
       nodeEnv: 'development',
       sessionCookieName: 'cf_session',
       sessionTtlDays: 30,
@@ -44,6 +48,22 @@ describe('loadApiConfig', () => {
         SUPABASE_SECRET_KEY: '',
       }),
     ).toThrow('SUPABASE_SECRET_KEY');
+  });
+
+  it('requires the backend-only OpenAI key and conversation model', () => {
+    expect(() =>
+      loadApiConfig({
+        ...ownChatEnv,
+        OPENAI_API_KEY: '',
+      }),
+    ).toThrow('OPENAI_API_KEY');
+
+    expect(() =>
+      loadApiConfig({
+        ...ownChatEnv,
+        OPENAI_CONVERSATION_MODEL: '',
+      }),
+    ).toThrow('OPENAI_CONVERSATION_MODEL');
   });
 
   it('rejects an invalid session TTL', () => {
