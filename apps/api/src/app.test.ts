@@ -13,14 +13,11 @@ describe('healthcheck', () => {
 });
 
 describe('API configuration', () => {
-  it('registers WhatsApp verification from the canonical app config field', async () => {
-    const response = await createApiApp({
-      whatsappVerifyToken: 'verify-test',
-    }).request(
-      '/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=verify-test&hub.challenge=42',
+  it('does not register a Meta webhook', async () => {
+    const response = await createApiApp({}).request(
+      '/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=legacy&hub.challenge=42',
     );
 
-    expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toBe('42');
+    expect(response.status).toBe(404);
   });
 });
