@@ -2,6 +2,8 @@ export interface ApiConfig {
   supabaseUrl: string;
   supabaseSecretKey: string;
   chatOrigin: string;
+  openaiApiKey: string;
+  openaiConversationModel: string;
   nodeEnv: 'development' | 'test' | 'production';
   sessionCookieName: string;
   sessionTtlDays: number;
@@ -63,6 +65,8 @@ export function loadApiConfig(env: ApiEnvironment): ApiConfig {
     supabaseUrl: requireValue(env, 'SUPABASE_URL'),
     supabaseSecretKey: requireValue(env, 'SUPABASE_SECRET_KEY'),
     chatOrigin: requireValue(env, 'CHAT_ORIGIN'),
+    openaiApiKey: requireValue(env, 'OPENAI_API_KEY'),
+    openaiConversationModel: requireValue(env, 'OPENAI_CONVERSATION_MODEL'),
     nodeEnv: parseNodeEnv(env.NODE_ENV),
     sessionCookieName: optionalValue(env, 'SESSION_COOKIE_NAME') ?? 'cf_session',
     sessionTtlDays: parseSessionTtlDays(env.SESSION_TTL_DAYS),
