@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import type { ChatMessageStore } from './chat/message-store.js';
 import { registerChatSessionRoutes } from './chat/session-routes.js';
 import type { ChatSessionStore } from './chat/session-store.js';
@@ -69,6 +70,18 @@ export function createApiApp(
       service: 'caneca-facil-api',
     }),
   );
+
+  if (config.chatOrigin?.trim()) {
+    app.use(
+      '/v1/chat/*',
+      cors({
+        origin: config.chatOrigin,
+        allowMethods: ['GET', 'POST', 'OPTIONS'],
+        allowHeaders: ['Content-Type'],
+        credentials: true,
+      }),
+    );
+  }
 
   const sessionStore = resolveSessionStore(config, dependencies);
   const messageStore = resolveMessageStore(config, dependencies);
