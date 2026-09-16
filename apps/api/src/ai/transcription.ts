@@ -84,6 +84,12 @@ export interface OpenAITranscriptionProviderConfig {
   client?: OpenAI;
 }
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
 export function createOpenAITranscriptionProvider(
   config: OpenAITranscriptionProviderConfig,
 ): TranscriptionProvider {
@@ -95,7 +101,7 @@ export function createOpenAITranscriptionProvider(
 
   return {
     async transcribe(input) {
-      const file = new File([input.bytes], input.filename, {
+      const file = new File([toArrayBuffer(input.bytes)], input.filename, {
         type: input.mimeType,
       });
       const result = await client.audio.transcriptions.create({
