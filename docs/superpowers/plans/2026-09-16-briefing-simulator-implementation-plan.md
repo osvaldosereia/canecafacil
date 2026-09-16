@@ -4,7 +4,7 @@
 
 **Goal:** Build a deterministic mug-briefing engine and a protected Admin-only `Teste IA` simulator that works without Meta/WhatsApp.
 
-**Architecture:** Keep briefing rules in `packages/core`, keep OpenAI behind a backend provider, keep simulator state in browser memory, and protect the simulator API with verified Supabase user identity plus server-side admin membership. The API must boot with WhatsApp disabled.
+**Architecture:** Keep briefing rules in `packages/core`, keep OpenAI behind a backend provider, keep simulator state in browser memory, and protect the simulator API with verified Supabase user identity plus server-side admin membership. Both API and Admin import the same briefing domain package. The API must boot with WhatsApp disabled.
 
 **Tech Stack:** TypeScript 5.9.3, Node 24, Hono 4.13.7, React 19.3, Vitest 5, Supabase JS 2.116.0, OpenAI SDK 7.15.0.
 
@@ -199,7 +199,7 @@ expect(next.colorPreferences).toEqual(['rosa']);
 expect(next.occasion).toBe('aniversário');
 ```
 
-- [ ] **Step 2: Write failing creative-freedom persistence tests.** `createEmptyBriefing()` must initialize `creativeFreedom: false`; an extraction with `creativeFreedom: true` must set it true; an extraction omitting the flag must preserve its previous value.
+- [ ] **Step 2: Write failing creative-freedom persistence tests.** `createEmptyBriefing()` initializes `creativeFreedom: false`; an extraction with `creativeFreedom: true` sets it true; an extraction omitting the flag preserves the previous value.
 
 - [ ] **Step 3: Write failing deduplication and mandatory-text tests.** Array facts in `set` merge without duplicates; mandatory text retains exact spelling/case. Array facts in `replace` replace only that array.
 
@@ -212,7 +212,7 @@ expect(next.occasion).toBe('aniversário');
 
 - [ ] **Step 5: Write failing next-question tests.** Priority is `creation_mode` → `reference` for reference mode → `creative_context` → `style_or_creative_freedom`; return one Portuguese question or `null` when ready.
 
-- [ ] **Step 6: Implement minimal pure functions.** `mergeBriefing` applies `extraction.creativeFreedom` only when it is explicitly boolean; otherwise it preserves `previous.creativeFreedom`. No database, OpenAI, HTTP, React, or WhatsApp imports are allowed.
+- [ ] **Step 6: Implement minimal pure functions.** `mergeBriefing` applies `extraction.creativeFreedom` only when explicitly boolean; otherwise it preserves `previous.creativeFreedom`. No database, OpenAI, HTTP, React, or WhatsApp imports are allowed.
 
 - [ ] **Step 7: Run core verification.**
 
@@ -284,7 +284,7 @@ The orchestrator consumes `BriefingProvider`, the current synthetic `Briefing`, 
 
 - [ ] **Step 3: Write failing input-bound tests.** Reject blank customer turn; cap to 2000 chars. Keep only the latest 12 synthetic messages and cap each to 800 chars.
 
-- [ ] **Step 4: Implement the orchestrator.** Import the shared functions from `@caneca-facil/core`. Do not import WhatsApp sender code or Supabase data-write stores.
+- [ ] **Step 4: Implement the orchestrator.** Import shared functions from `@caneca-facil/core`. Do not import WhatsApp sender code or Supabase data-write stores.
 
 - [ ] **Step 5: Verify.**
 
@@ -348,17 +348,20 @@ git commit -am "feat: expose protected briefing simulator"
 - Modify: `apps/admin/src/App.tsx`
 - Modify: `apps/admin/src/App.test.tsx`
 - Modify: `apps/admin/src/main.tsx`
+- Modify: `apps/admin/package.json`
 - Modify: `apps/admin/.env.example`
+- Modify: `package-lock.json`
 
 **Interfaces:**
+- Add exact workspace dependency `"@caneca-facil/core": "0.1.0"` to `apps/admin/package.json`; use its `Briefing` type and `createEmptyBriefing()` rather than duplicating the domain shape in React.
 - New browser config: `VITE_API_URL`.
 - Produce `submitBriefingSimulation({ apiBaseUrl, accessToken, briefing, transcript, customerTurn })`.
 
-- [ ] **Step 1: Write failing service tests.** Verify Bearer token, JSON payload, normalized errors, and absence of service credentials from browser config.
+- [ ] **Step 1: Add the core workspace dependency and write failing service tests.** Verify Bearer token, JSON payload, normalized errors, and absence of service credentials from browser config.
 
 - [ ] **Step 2: Write failing page tests.** Require `Conversa simulada`, `Entendimento da IA`, `Próxima ação`, `Enviar como cliente`, and `Nova simulação`.
 
-- [ ] **Step 3: Implement local state only.** Keep transcript, briefing, next action, draft, loading, and error in React state. `Nova simulação` restores `createEmptyBriefing()` and an empty transcript.
+- [ ] **Step 3: Implement local state only.** Keep transcript, shared-core `Briefing`, next action, draft, loading, and error in React state. `Nova simulação` calls the shared `createEmptyBriefing()` and clears transcript.
 
 - [ ] **Step 4: Read the current Supabase session access token before every submission.** Without a token, show an Admin session error and do not call the API.
 
@@ -368,9 +371,9 @@ git commit -am "feat: expose protected briefing simulator"
 
 - [ ] **Step 7: Wire API URL.** Pass `VITE_API_URL` from `main.tsx` through `App`/`AdminWorkspace`. Add `VITE_API_URL=http://localhost:3000` to the Admin `.env.example`.
 
-- [ ] **Step 8: Verify Admin.**
+- [ ] **Step 8: Update lockfile and verify Admin.**
 
-Run: `npm run test --workspace apps/admin && npm run typecheck --workspace apps/admin && npm run build --workspace apps/admin`
+Run: `npm install && npm run test --workspace apps/admin && npm run typecheck --workspace apps/admin && npm run build --workspace apps/admin`
 Expected: PASS.
 
 - [ ] **Step 9: Commit.**
@@ -386,7 +389,7 @@ git commit -am "feat: add admin AI briefing simulator"
 **Files:**
 - Create: `docs/acceptance/briefing-simulator.md`
 
-- [ ] **Step 1: Run a multi-turn deterministic acceptance path with fakes.** Use: “quero uma caneca para minha esposa” → select creation from scratch → birthday → minimalist/blue → explicit correction to pink. Confirm wife/birthday/style remain unchanged while only color is replaced.
+- [ ] **Step 1: Run a multi-turn deterministic acceptance path with fakes.** Use: “quero uma caneca para minha esposa” → creation from scratch → birthday → minimalist/blue → explicit correction to pink. Confirm wife/birthday/style remain unchanged while only color changes.
 
 - [ ] **Step 2: Verify creative freedom across turns.** Set creative freedom in one turn, omit it in the next, and confirm it remains true until explicitly changed.
 
@@ -394,7 +397,7 @@ git commit -am "feat: add admin AI briefing simulator"
 
 - [ ] **Step 4: Verify authorization.** Unauthenticated and authenticated-non-admin requests must be rejected before provider invocation.
 
-- [ ] **Step 5: Verify Meta independence.** Start the production API without any `WHATSAPP_*` variables and confirm `GET /health` returns 200.
+- [ ] **Step 5: Verify Meta independence.** Start production API without any `WHATSAPP_*` variable and confirm `GET /health` returns 200.
 
 - [ ] **Step 6: Run repository gates.**
 
