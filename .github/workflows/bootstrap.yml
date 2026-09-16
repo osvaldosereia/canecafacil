@@ -29,6 +29,7 @@ jobs:
           rsync -a --delete \
             --exclude='.git' \
             --exclude='.github/workflows/bootstrap.yml' \
+            --exclude='.github/workflows/ci.yml' \
             "$tmpdir/source/" ./
 
       - name: Normalize root environment example
