@@ -1,4 +1,4 @@
-import type { NormalizedInboundMessage } from './normalize-event';
+import type { NormalizedInboundMessage } from './normalize-event.js';
 
 export interface InboundMessageClaim {
   accepted: boolean;
