@@ -24,6 +24,8 @@ jobs:
         run: npm test
       - name: Typecheck
         run: npm run typecheck
+      - name: Reject active Meta dependencies
+        run: npm run check:no-meta
       - name: Build
         run: npm run build
       - name: Smoke test production API
