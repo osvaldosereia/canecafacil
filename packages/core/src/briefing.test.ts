@@ -141,28 +141,29 @@ describe('briefing domain', () => {
   });
 
   it('asks exactly one next question using deterministic priority', () => {
-    const briefing = createEmptyBriefing();
+    const referenceBriefing = createEmptyBriefing();
 
-    expect(getNextBriefingQuestion(briefing)).toBe(
+    expect(getNextBriefingQuestion(referenceBriefing)).toBe(
       'Você já tem uma imagem ou modelo como referência, ou quer criar a caneca do zero?',
     );
 
-    briefing.creationMode = 'reference';
-    expect(getNextBriefingQuestion(briefing)).toBe(
+    referenceBriefing.creationMode = 'reference';
+    expect(getNextBriefingQuestion(referenceBriefing)).toBe(
       'Envie a imagem que você quer usar como referência para a caneca.',
     );
 
-    briefing.references.push({ mediaId: 'media-1', order: 1 });
-    expect(getNextBriefingQuestion(briefing)).toBe(
-      'Para quem ou para qual ocasião é a caneca? Pode me contar a ideia principal.',
-    );
-
-    briefing.recipient = 'esposa';
-    expect(getNextBriefingQuestion(briefing)).toBe(
+    referenceBriefing.references.push({ mediaId: 'media-1', order: 1 });
+    expect(getNextBriefingQuestion(referenceBriefing)).toBe(
       'Você prefere algum estilo específico ou posso criar com liberdade?',
     );
 
-    briefing.creativeFreedom = true;
-    expect(getNextBriefingQuestion(briefing)).toBeNull();
+    referenceBriefing.creativeFreedom = true;
+    expect(getNextBriefingQuestion(referenceBriefing)).toBeNull();
+
+    const fromScratch = createEmptyBriefing();
+    fromScratch.creationMode = 'from_scratch';
+    expect(getNextBriefingQuestion(fromScratch)).toBe(
+      'Para quem ou para qual ocasião é a caneca? Pode me contar a ideia principal.',
+    );
   });
 });
