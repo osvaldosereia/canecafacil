@@ -1,0 +1,84 @@
+name: Bootstrap Caneca Fácil
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.event.head_commit.message == 'chore: bootstrap Caneca Fácil repository'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Fetch approved Caneca Fácil snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          git clone --no-checkout https://github.com/osvaldosereia/CHAT.git "$tmpdir/source"
+          git -C "$tmpdir/source" checkout 0ecbbc20eb08db9651340b2df2a4b80705741762
+          rsync -a --delete \
+            --exclude='.git' \
+            --exclude='.github/workflows/bootstrap.yml' \
+            "$tmpdir/source/" ./
+
+      - name: Normalize root environment example
+        shell: bash
+        run: |
+          cat > .env.example <<'EOF'
+          # Admin — only public values
+          VITE_SUPABASE_URL=https://ijquzclfijwfgwupoxmg.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY=
+
+          # API — secrets only in the server-side environment
+          SUPABASE_URL=https://ijquzclfijwfgwupoxmg.supabase.co
+          SUPABASE_SECRET_KEY=sb_secret_replace_me
+          OPENAI_API_KEY=sk-replace_me
+          WHATSAPP_VERIFY_TOKEN=replace_me
+          WHATSAPP_ACCESS_TOKEN=replace_me
+          WHATSAPP_PHONE_NUMBER_ID=replace_me
+          WHATSAPP_GRAPH_VERSION=replace_me
+          WHATSAPP_APP_SECRET=replace_me
+          PORT=3000
+          EOF
+
+      - name: Mark the dedicated repository as canonical
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('README.md')
+          text = p.read_text(encoding='utf-8')
+          note = '> Repositório oficial e independente do projeto Caneca Fácil: `osvaldosereia/canecafacil`.\n\n'
+          if note not in text:
+              p.write_text(note + text, encoding='utf-8')
+          PY
+
+      - name: Reject accidental real secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RIE --exclude-dir=.git \
+            --exclude='package-lock.json' \
+            '(sk-[A-Za-z0-9_-]{24,}|sb_secret_[A-Za-z0-9_-]{20,}|EAAG[A-Za-z0-9]{20,})' .; then
+            echo 'Potential real secret detected. Migration stopped.' >&2
+            exit 1
+          fi
+
+      - name: Commit migrated project
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'chore: migrate Caneca Fácil into dedicated repository'
+          git push origin main
