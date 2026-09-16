@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AdminAuthorizationError, verifyAdminAccessToken } from './admin-auth';
+import { verifyAdminAccessToken } from './admin-auth';
 
 function createFakeClient(options: {
   tokenUserId?: string | null;
@@ -38,7 +38,7 @@ describe('verifyAdminAccessToken', () => {
 
     await expect(
       verifyAdminAccessToken(undefined, client),
-    ).rejects.toMatchObject<AdminAuthorizationError>({ status: 401 });
+    ).rejects.toMatchObject({ status: 401 });
     expect(membershipLookup).not.toHaveBeenCalled();
   });
 
@@ -50,7 +50,7 @@ describe('verifyAdminAccessToken', () => {
 
     await expect(
       verifyAdminAccessToken('Bearer invalid-token', client),
-    ).rejects.toMatchObject<AdminAuthorizationError>({ status: 401 });
+    ).rejects.toMatchObject({ status: 401 });
     expect(membershipLookup).not.toHaveBeenCalled();
   });
 
@@ -62,7 +62,7 @@ describe('verifyAdminAccessToken', () => {
 
     await expect(
       verifyAdminAccessToken('Bearer valid-token', client),
-    ).rejects.toMatchObject<AdminAuthorizationError>({ status: 403 });
+    ).rejects.toMatchObject({ status: 403 });
     expect(membershipLookup).toHaveBeenCalledWith('normal-user-id');
   });
 
