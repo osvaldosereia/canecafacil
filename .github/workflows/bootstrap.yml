@@ -4,13 +4,14 @@ on:
   push:
     branches:
       - main
+    paths:
+      - '.github/workflows/bootstrap.yml'
 
 permissions:
   contents: write
 
 jobs:
   migrate:
-    if: github.event.head_commit.message == 'chore: bootstrap Caneca Fácil repository'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout target repository
