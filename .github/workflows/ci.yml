@@ -26,6 +26,32 @@ jobs:
         run: npm run typecheck
       - name: Build
         run: npm run build
+      - name: Smoke test production API
+        env:
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_SECRET_KEY: sb_secret_test_placeholder
+          WHATSAPP_VERIFY_TOKEN: test-verify-token
+          WHATSAPP_ACCESS_TOKEN: test-access-token
+          WHATSAPP_PHONE_NUMBER_ID: '123456789'
+          WHATSAPP_GRAPH_VERSION: v23.0
+          WHATSAPP_APP_SECRET: test-app-secret
+          PORT: '3100'
+        run: |
+          set -euo pipefail
+          npm run start --workspace @caneca-facil/api > /tmp/caneca-facil-api.log 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent --show-error http://127.0.0.1:3100/health > /tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 0.5
+          done
+
+          cat /tmp/caneca-facil-api.log
+          exit 1
 
   lockfile:
     if: github.event_name == 'push'
