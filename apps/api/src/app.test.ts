@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatMessageStore } from './chat/message-store.js';
 import type { ChatSessionStore } from './chat/session-store.js';
+import type { ChatMediaStore } from './media/media-store.js';
 import { createApiApp } from './app';
 
 describe('healthcheck', () => {
@@ -58,6 +59,39 @@ describe('API configuration', () => {
         clientMessageId: '7c4c0c87-b137-4df4-90d7-f31c88940864',
         text: 'Quero uma caneca',
       }),
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  it('registers own-chat media route when stores are available', async () => {
+    const sessionStore: ChatSessionStore = {
+      create: vi.fn(),
+      resolve: vi.fn().mockResolvedValue(null),
+      touch: vi.fn(),
+    };
+    const mediaStore: ChatMediaStore = {
+      save: vi.fn(),
+    };
+    const app = createApiApp(
+      {
+        chatOrigin: 'http://localhost:5174',
+        nodeEnv: 'test',
+        sessionCookieName: 'cf_session',
+        sessionTtlDays: 30,
+      },
+      { sessionStore, mediaStore },
+    );
+
+    const form = new FormData();
+    form.set('file', new File(['x'], 'photo.png', { type: 'image/png' }));
+    const response = await app.request('/v1/chat/media', {
+      method: 'POST',
+      headers: {
+        Origin: 'http://localhost:5174',
+        Cookie: 'cf_session=test-token',
+      },
+      body: form,
     });
 
     expect(response.status).toBe(401);
