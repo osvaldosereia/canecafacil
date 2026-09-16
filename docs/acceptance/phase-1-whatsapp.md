@@ -1,12 +1,13 @@
 # Caneca Fácil — Phase 1 WhatsApp Acceptance Checkpoint
 
 **Date:** 2026-09-16  
-**Branch:** `feat/caneca-facil-round-1-foundation`  
-**Status:** Code/database checkpoint verified; live Meta end-to-end acceptance pending deployment/real credentials.
+**Repository:** `osvaldosereia/canecafacil`  
+**Branch:** `main`  
+**Status:** Code/database/deployment-contract checkpoint verified; live Meta end-to-end acceptance pending public Railway service and real Meta credentials.
 
 ## Automated repository verification
 
-The Phase 1 branch has automated coverage for:
+The Phase 1 implementation has automated coverage for:
 
 - canonical API environment configuration;
 - Meta GET webhook verification contract;
@@ -24,11 +25,13 @@ The Phase 1 branch has automated coverage for:
 - AI reply blocking while human-owned, paused, closed, or requiring attention;
 - customer email/profile domain fields.
 
-Latest implementation/fix CI checkpoint executed repository tests, TypeScript typecheck and build successfully.
+Production deployment is also covered by CI. The API is built as Node ESM, started from compiled `dist/server.js`, and the CI smoke test must receive HTTP 200 from `GET /health` before the verify job succeeds.
+
+Railway Config-as-Code is present at repository root using the current `railpack` builder, the monorepo build command, API start command and `/health` healthcheck.
 
 ## Supabase verification
 
-Live project: `ijquzclfijwfgwupoxmg`.
+Live project: `ijquzclfijwfgwupoxmg` (`Caneca Fácil`).
 
 Tracked live migrations through this checkpoint:
 
@@ -51,7 +54,19 @@ During this probe an ambiguity in the PL/pgSQL `ON CONFLICT` expression was disc
 
 RPC execution privileges were rechecked: only `postgres` and `service_role` can execute `public.ingest_whatsapp_inbound(...)`.
 
-Supabase security advisor after the migrations: no lints. Performance advisor reports 25 `unused_index` informational notices on the still-empty/low-traffic schema; no indexes are removed at this stage because their real operational query paths have not yet been exercised.
+Latest Supabase security advisor checkpoint: no lints. Performance advisor previously reported 25 `unused_index` informational notices on the still-empty/low-traffic schema; no indexes are removed at this stage because their real operational query paths have not yet been exercised.
+
+## Preparatory media/audio infrastructure
+
+The repository already contains preparatory Phase 2 Task 1 infrastructure for:
+
+- official Meta two-step media retrieval;
+- private `customer-uploads` storage;
+- `project_media` persistence;
+- idempotent audio transcription using unique `audio_transcriptions.project_media_id`;
+- backend-only OpenAI transcription behind a provider interface.
+
+This infrastructure is intentionally **not wired to automatic customer processing yet**. It does not close the Phase 1 gate and must not start consuming OpenAI automatically before the live Meta acceptance below is complete.
 
 ## Live Meta acceptance still required
 
@@ -69,16 +84,17 @@ Required server environment:
 
 Real-environment acceptance sequence:
 
-1. Configure Meta webhook callback to `GET/POST /webhooks/whatsapp` on the deployed API.
-2. Complete Meta GET verification using the configured verify token.
-3. Send one real customer text to the Caneca Fácil WhatsApp number.
-4. Confirm one customer, one open conversation and one inbound message in Supabase.
-5. Replay the same signed webhook payload and confirm no duplicate message row or downstream processing.
-6. Send one outbound text through the official Meta Cloud API and confirm its provider message ID is persisted as `direction = outbound`.
-7. Switch the conversation `ai → human`; confirm automated reply eligibility is false while project/conversation context remains intact.
-8. Switch `human → ai`; confirm automation eligibility is restored.
-9. Re-run repository verification and Supabase security advisor.
+1. Deploy the `main` branch and confirm public `GET /health` returns HTTP 200.
+2. Configure the Meta callback to `GET/POST /webhooks/whatsapp` on the deployed API.
+3. Complete Meta GET verification using the configured verify token.
+4. Send one real customer text to the Caneca Fácil WhatsApp number.
+5. Confirm one customer, one open conversation and one inbound message in Supabase.
+6. Replay the same signed webhook payload and confirm no duplicate message row or downstream processing.
+7. Send one outbound text through the official Meta Cloud API and confirm its provider message ID is persisted as `direction = outbound`.
+8. Switch the conversation `ai → human`; confirm automated reply eligibility is false while project/conversation context remains intact.
+9. Switch `human → ai`; confirm automation eligibility is restored.
+10. Re-run repository verification and Supabase security advisor.
 
 ## Phase 1 exit decision
 
-The implementation and database portions of Phase 1 are ready for live integration testing. The Phase 1 exit gate remains **pending** until steps 1–8 above are exercised against a deployed API and the real Meta WhatsApp account. Creative AI Phase 2 must not be treated as production-ready before this live gate is closed.
+The implementation, database and deployment-contract portions of Phase 1 are ready for live integration testing. The Phase 1 exit gate remains **pending** until the public Railway service and real Meta WhatsApp account complete the acceptance sequence above. Creative AI Phase 2 must not be treated as production-ready before this live gate is closed.
