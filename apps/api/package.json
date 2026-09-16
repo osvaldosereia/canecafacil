@@ -10,6 +10,7 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
+    "@caneca-facil/core": "0.1.0",
     "@hono/node-server": "2.1.1",
     "@supabase/supabase-js": "2.116.0",
     "hono": "4.13.7",
