@@ -10,12 +10,13 @@ describe('production deployment contract', () => {
     expect(packageJson.scripts?.start).toBe('node dist/server.js');
   });
 
-  it('declares Railway build, start, and healthcheck settings', () => {
+  it('declares Railway Railpack build, start, and healthcheck settings', () => {
     const railwayConfig = readFileSync(
       new URL('../../../railway.toml', import.meta.url),
       'utf8',
     );
 
+    expect(railwayConfig).toContain('builder = "railpack"');
     expect(railwayConfig).toContain('buildCommand = "npm ci && npm run build"');
     expect(railwayConfig).toContain(
       'startCommand = "npm run start --workspace @caneca-facil/api"',
