@@ -1,6 +1,7 @@
 export const PROJECT_NAME = 'Caneca Fácil';
 
 export * from './briefing';
+export * from './chat';
 export * from './conversation';
 export * from './customer';
 export * from './phone';
