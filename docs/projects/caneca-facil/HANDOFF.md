@@ -12,18 +12,18 @@ Historical only: `osvaldosereia/CHAT`
 Then read `CURRENT-STATE.md`, `PROJECT-MASTER.md`, `ROADMAP.md`, `DECISIONS.md`.
 
 ## Current checkpoint
-Phase A is complete. Rounds 1 and 2 are complete. Phase B is ACCEPTED: CI run `35428936326` succeeded end-to-end, including production API smoke, after the Node ESM correction.
+Phase A is complete. Rounds 1 and 2 are complete. Phase B is ACCEPTED by CI `35428936326` including production API smoke.
 
-Round 3 / Phase C is active. Deterministic storefront search/filter/recommend/compare already exists in core. This round proved that `mug_templates` lacked safe authoritative commerce metadata, so Supabase migration `storefront_catalog_fields` was applied and mirrored in `supabase/migrations/20260919041600_storefront_catalog_fields.sql`. It adds description, tags, `base_price_cents`, image URL and indexes. Null price means not sellable.
+Round 3 / Phase C is active. Core search/filter/recommend/compare exists. Supabase migration `storefront_catalog_fields` is applied and mirrored. `StorefrontStore` plus Supabase adapter enforce sellable catalog reads and safe project binding.
 
-`apps/api/src/storefront/storefront-store.ts` now defines the persistence boundary and `supabase-storefront-store.ts` implements sellable catalog reads plus safe template binding to the conversation's active project.
+This round added `StorefrontService`, session-scoped routes `/v1/chat/storefront/search`, `/recommend`, `/compare`, `/select`, and app wiring. Selection never accepts conversation/project ownership from the request; it derives conversation identity from the existing HttpOnly chat session and the store validates active project plus sellable template. Commits: `899a484f`, `1f4ef827`, `a7b41847`.
 
 ## Continue autonomously
-1. Implement storefront service/routes for search, recommend, compare and select/project binding.
-2. Add store/service/route tests, especially inactive/unpriced rejection and ownership-safe binding.
-3. Extend bounded chat components for storefront cards/carousels/selections and begin Round 4 UI integration if Round 3 closes early.
-4. Run tests/typecheck/build/no-Meta and inspect CI after commits.
-5. Keep prices and protected selection state server-authoritative; AI may recommend but never invent price or force selection.
+1. Add storefront service/store/route tests for filters, limits, unauthorized access, wrong origin, inactive/unpriced templates and ownership-safe binding.
+2. Run tests/typecheck/build/no-Meta and fix regressions; close Round 3 when green.
+3. Extend bounded chat components for storefront cards/carousels/selections.
+4. Begin Round 4 UI integration: render storefront components and connect selection to the session-scoped endpoint.
+5. Keep price and protected selection state server-authoritative; AI may recommend but never invent price or force selection.
 6. Update CURRENT-STATE/HANDOFF after substantial progress.
 
 Never reintroduce Meta, WhatsApp or Make runtime code. Never program in `osvaldosereia/CHAT`. Do not mix Dona Antônia or any other project.
