@@ -3,28 +3,26 @@
 Updated: 2026-09-19
 
 ## Repository
-Phase A base: `db92bf43d74235cdaca9d8794ad188c6ad871efe`.
-Active implementation branch: `phase-b-conversational-ai`.
-Draft PR: `#8`.
+Phase A base: `db92bf43d74235cdaca9d8794ad188c6ad871efe`. Active implementation branch: `phase-b-conversational-ai`. Draft PR: `#8`.
 
 ## Phase A
 Complete and accepted. Own chat, anonymous session, SSE, provider-neutral messages, durable history and private direct uploads are present. Active runtime is Meta/WhatsApp-free.
 
 ## Supabase
-Project `ijquzclfijwfgwupoxmg` remains the authority. Round 3 proved a storefront schema gap and applied migration `storefront_catalog_fields`: `mug_templates` now has description, tags, authoritative `base_price_cents`, image URL and indexes. Null price deliberately means the template is not sellable until configured. RLS remains enabled.
+Project `ijquzclfijwfgwupoxmg` remains the authority. Round 3 applied `storefront_catalog_fields`: `mug_templates` has description, tags, authoritative `base_price_cents`, image URL and indexes. Null price means not sellable. RLS remains enabled.
 
 ## Phase B — ACCEPTED
-Round 1 implementation is complete: Supabase briefing adapter, real turn orchestration, structured assistant content, validated component SSE, retry replay, OpenAI backend adapter and ownership gates.
-
-Round 2 is accepted. CI run `35428936326` on checkpoint `d7c910e7` completed successfully after the Node ESM core import correction, proving the full repository CI including production API smoke. Same-engine multi-turn acceptance coverage and correction preservation are documented in `docs/acceptance/phase-b-conversational-ai.md`.
+Rounds 1-2 are accepted. CI `35428936326` proved tests, typecheck, no-Meta guard, production build and API smoke. Same-engine multi-turn acceptance is documented in `docs/acceptance/phase-b-conversational-ai.md`.
 
 ## Phase C — ACTIVE
-Round 3 is active. `packages/core/src/storefront.ts` provides deterministic active-only search, tag/price/capacity filtering, contextual recommendation ranking and bounded comparison. The persistence gap is now closed in Supabase and mirrored by repository migration `20260919041600_storefront_catalog_fields.sql`.
+Deterministic active-only search, tag/price/capacity filtering, contextual recommendations and bounded comparison live in core. Supabase persistence maps only sellable templates and selection validates active project plus active/priced template before binding.
 
-API persistence contracts were added in `apps/api/src/storefront/`: catalog reads map only sellable templates (configured integer-cent price), and project binding validates that the conversation has an active project and that the selected template is active/sellable before updating the project.
+This round added `StorefrontService` and session-scoped own-chat routes for search, recommend, compare and select. Selection remains server-authoritative and derives conversation ownership exclusively from the HttpOnly session; callers cannot submit a conversation/project id. The service caps recommendations and comparison size.
+
+Commits: `899a484f` storefront service, `1f4ef827` routes, `a7b41847` app wiring.
 
 ## Next executable work
-1. Add storefront service/routes for search/recommend/compare/select using the deterministic core and Supabase store.
-2. Add route/store tests including inactive/unpriced rejection and conversation/project binding.
-3. Expose bounded storefront components through the chat protocol and then advance Round 4 UI integration.
-4. Keep pricing and selection server-authoritative and deterministic.
+1. Add service/route/store tests, especially inactive/unpriced rejection, session ownership and project binding.
+2. Extend the bounded chat component protocol with storefront card/carousel/selection payloads.
+3. Advance Round 4: render storefront components in the chat and connect selection actions to the session-scoped API.
+4. Run tests/typecheck/build/no-Meta and inspect CI; fix regressions before declaring Round 3 complete.
