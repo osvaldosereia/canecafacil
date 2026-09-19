@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { createDeterministicConversationInterpreter, validateConversationInterpretation } from './conversation-interpreter.js';
+import { describe, expect, it, vi } from 'vitest';
+import { createDeterministicConversationInterpreter, createOpenAIConversationInterpreter, validateConversationInterpretation } from './conversation-interpreter.js';
 
 describe('conversation interpreter', () => {
   it('keeps extraction separate from protected business mutations', async () => {
@@ -19,5 +19,31 @@ describe('conversation interpreter', () => {
 
   it('rejects empty provider replies', () => {
     expect(() => validateConversationInterpretation({ replyText: '   ', facts: {} })).toThrow();
+  });
+
+  it('uses structured OpenAI output with compact recent context', async () => {
+    const create = vi.fn().mockResolvedValue({ output_text: JSON.stringify({ replyText: 'Perfeito, vou considerar azul.', facts: { colorPreferences: ['azul'] } }) });
+    const client = { responses: { create } } as any;
+    const interpreter = createOpenAIConversationInterpreter({ apiKey: 'test-key', client, maxRecentMessages: 2 });
+    const result = await interpreter.interpret({
+      customerText: 'quero azul',
+      knownBriefing: { occasion: 'presente' },
+      recentMessages: [
+        { senderType: 'customer', text: 'antiga' },
+        { senderType: 'ai', text: 'qual cor?' },
+        { senderType: 'customer', text: 'azul' },
+      ],
+    });
+    expect(result.facts).toEqual({ colorPreferences: ['azul'] });
+    const request = create.mock.calls[0][0];
+    expect(request.text.format.type).toBe('json_schema');
+    expect(request.input).not.toContain('antiga');
+    expect(request.input).toContain('qual cor?');
+  });
+
+  it('fails closed when OpenAI returns invalid JSON', async () => {
+    const client = { responses: { create: vi.fn().mockResolvedValue({ output_text: 'not-json' }) } } as any;
+    const interpreter = createOpenAIConversationInterpreter({ apiKey: 'test-key', client });
+    await expect(interpreter.interpret({ customerText: 'oi', knownBriefing: {} })).rejects.toThrow('invalid JSON');
   });
 });
