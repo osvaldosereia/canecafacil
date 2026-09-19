@@ -3,8 +3,8 @@ import { createStorefrontService } from './storefront-service.js';
 import type { StorefrontStore } from './storefront-store.js';
 
 const catalog = [
-  { id: 'basic', name: 'Caneca Branca', description: 'Clássica', tags: ['classica'], priceCents: 2990, capacityMl: 325, imageUrl: null, active: true },
-  { id: 'premium', name: 'Caneca Premium', description: 'Presente elegante', tags: ['presente', 'premium'], priceCents: 4990, capacityMl: 325, imageUrl: null, active: true },
+  { id: 'basic', name: 'Caneca Branca', description: 'Clássica', tags: ['classica'], basePriceCents: 2990, capacityMl: 325, imageUrl: undefined, active: true },
+  { id: 'premium', name: 'Caneca Premium', description: 'Presente elegante', tags: ['presente', 'premium'], basePriceCents: 4990, capacityMl: 325, imageUrl: undefined, active: true },
 ];
 
 function store(): StorefrontStore {
