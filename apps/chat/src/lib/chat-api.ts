@@ -26,11 +26,21 @@ export interface ChatMediaPayload {
   [key: string]: unknown;
 }
 
+export interface StorefrontCarouselItem {
+  templateId: string;
+  name: string;
+  description?: string;
+  priceCents: number;
+  capacityMl?: number;
+  imageUrl?: string;
+}
+
 export interface ChatApi {
   startSession(): Promise<{ conversationId: string }>;
   loadConversation(): Promise<ChatConversationPayload>;
   sendTurn(text: string): AsyncGenerator<ChatSseEvent>;
   uploadMedia(file: File): Promise<ChatMediaPayload>;
+  selectStorefrontTemplate(templateId: string): Promise<{ templateId: string }>;
 }
 
 export interface ChatApiOptions {
@@ -93,6 +103,16 @@ export function createChatApi(options: ChatApiOptions): ChatApi {
         body: form,
       });
       return readJson<ChatMediaPayload>(response, 'Media upload');
+    },
+
+    async selectStorefrontTemplate(templateId) {
+      const response = await fetchImpl(`${baseUrl}/v1/chat/storefront/select`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ templateId }),
+      });
+      return readJson<{ templateId: string }>(response, 'Storefront selection');
     },
   };
 }

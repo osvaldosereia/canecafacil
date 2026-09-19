@@ -1,8 +1,10 @@
 export const PROJECT_NAME = 'Caneca Fácil';
 
-export * from './briefing';
-export * from './chat';
-export * from './conversation';
-export * from './customer';
-export * from './phone';
-export * from './project-status';
+export * from './briefing.js';
+export * from './chat.js';
+export * from './chat-components.js';
+export * from './conversation.js';
+export * from './customer.js';
+export * from './phone.js';
+export * from './project-status.js';
+export * from './storefront.js';

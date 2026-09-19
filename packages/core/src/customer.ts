@@ -1,4 +1,4 @@
-import { normalizeBrazilianPhone } from './phone';
+import { normalizeBrazilianPhone } from './phone.js';
 
 export interface CustomerRecord {
   id: string;

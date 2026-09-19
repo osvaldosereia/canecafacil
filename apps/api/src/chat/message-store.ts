@@ -26,7 +26,11 @@ export interface ChatMessageStore {
     conversationId: string;
     replyToMessageId: string;
   }): Promise<{ reused: boolean; message: ChatMessage }>;
-  completeAssistant(messageId: string, text: string): Promise<ChatMessage>;
+  completeAssistant(
+    messageId: string,
+    text: string,
+    structuredContent?: Record<string, unknown>,
+  ): Promise<ChatMessage>;
   failAssistant(messageId: string): Promise<void>;
   listConversation(conversationId: string): Promise<ChatMessage[]>;
 }
