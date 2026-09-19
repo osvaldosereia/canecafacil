@@ -14,16 +14,16 @@ Then read `CURRENT-STATE.md`, `PROJECT-MASTER.md`, `ROADMAP.md`, `DECISIONS.md`.
 ## Current checkpoint
 Phase A is complete. Rounds 1 and 2 are complete. Phase B is ACCEPTED by CI `35428936326` including production API smoke.
 
-Round 3 / Phase C is active and near closure. Core search/filter/recommend/compare exists. Supabase migration `storefront_catalog_fields` is applied and mirrored. `StorefrontStore` plus Supabase adapter enforce sellable catalog reads and safe project binding. StorefrontService and session-scoped `/search`, `/recommend`, `/compare`, `/select` routes are wired.
+Round 3 / Phase C remains near closure. Core search/filter/recommend/compare, Supabase catalog fields/store and session-scoped search/recommend/compare/select routes exist. CI `35437027872` failed in Test because a new service fixture used `priceCents` instead of canonical `basePriceCents`; corrected by `75e117bd`.
 
-Latest work added StorefrontService tests (`101fca7a`), session/ownership/origin route tests (`4e262596`), and started Round 4 with a bounded `storefront_carousel` chat component plus validation tests (`98c28ecb`, `06e09b34`). The carousel is limited to eight items and requires non-negative integer server prices. No Supabase change was needed.
+Round 4 has materially advanced. The validated `storefront_carousel` protocol now reaches the customer UI from both persisted `structuredContent` and live SSE. Cards show server-provided BRL price, optional capacity/image/description, stay horizontally browsable/mobile-first, and select through `/v1/chat/storefront/select` only. The browser API sends only `templateId`, preserving HttpOnly-session ownership. Commits: `77d7a183`, `592f09fb`, `be9f42e2`.
 
 ## Continue autonomously
-1. Add Supabase storefront adapter tests for inactive/unpriced template rejection and active-project binding.
-2. Inspect CI for the latest branch head and fix test/typecheck/build/no-Meta regressions; then mark Round 3 complete.
-3. Continue Round 4: render `storefront_carousel` in `apps/chat`, format authoritative cents as BRL, and POST selection only to the session-scoped `/v1/chat/storefront/select` endpoint.
-4. Add chat UI tests for rendering, selection success/failure and no caller-owned conversation/project identifiers.
-5. Keep price and protected selection state server-authoritative; AI may recommend but never invent price or force selection.
+1. Inspect CI after `75e117bd` plus the chat integration and fix any regression immediately.
+2. Add Supabase storefront adapter tests for inactive/unpriced rejection and active-project binding; formally close Round 3 once green.
+3. Add focused chat/API tests for restored carousel, live component event and selection request containing only `templateId`; formally close Round 4 once green.
+4. Start Round 5 immediately after those gates: creative-production provider/store contracts, immutable art versions, reference/media inputs, validation and test provider; do not wait for external AI credentials.
+5. Preserve server-authoritative prices/protected state, private media, idempotency, RLS and no-Meta/no-WhatsApp/no-Make runtime.
 6. Update CURRENT-STATE/HANDOFF after substantial progress.
 
 Never reintroduce Meta, WhatsApp or Make runtime code. Never program in `osvaldosereia/CHAT`. Do not mix Dona Antônia or any other project.
