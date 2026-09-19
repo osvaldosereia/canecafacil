@@ -12,20 +12,20 @@ Historical only: `osvaldosereia/CHAT`
 Then read `CURRENT-STATE.md`, `PROJECT-MASTER.md`, `ROADMAP.md`, `DECISIONS.md`.
 
 ## Current checkpoint
-Phase A is complete. Final autonomous plan: Round 1 complete; Round 2 is in final verification.
+Phase A is complete. Round 1 is complete. Round 2 remains at its final CI gate; Round 3 has begun in parallel where independent.
 
 Round 1 integrated Phase B intelligence into the real own-chat turn path: transactional Supabase briefing store, orchestrator, `ai | human | paused` gate, validated component SSE, durable assistant `structured_content`, retry replay and optional backend-only OpenAI runtime.
 
-Round 2 added a same-engine multi-turn acceptance scenario and `docs/acceptance/phase-b-conversational-ai.md`. It also diagnosed a production-only NodeNext workspace typing failure that did not appear in tests/typecheck. Fixes now make `@caneca-facil/core` expose source types to workspace consumers and use explicit `.js` specifiers in its public TypeScript barrel, while runtime imports continue to use built `dist` JavaScript.
+Round 2 added same-engine multi-turn acceptance coverage and `docs/acceptance/phase-b-conversational-ai.md`. CI run `35423599351` at `d78fe22b` passed tests, typecheck and no-Meta but still failed production Build, so Phase B must NOT yet be marked accepted. Commit `3296ff73` corrected the package boundary so workspace consumers resolve `@caneca-facil/core` from built `dist` declarations/runtime consistently under NodeNext. Await/inspect the next PR CI and continue fixing until Build + production API smoke are green.
 
-Relevant Round 2 commits: `c55e2f70`, `42a0cea2`, `54dc42b1`, `6835571a`, `ec8a122e`.
+Round 3 independent work has started: deterministic server-authoritative storefront contracts/search/filter/recommendation/compare live in `packages/core/src/storefront.ts` with tests. Commits: `75bba165`, `9bd0c3fb`, `4cdec552`.
 
 ## Continue autonomously
-1. Inspect the newest PR #8 CI generated after `6835571a`/`ec8a122e`.
+1. Inspect newest PR #8 CI after `3296ff73` and subsequent storefront commits.
 2. Fix any remaining CI failure until tests, typecheck, no-Meta, build and production API smoke are all green.
-3. Mark Phase B acceptance ACCEPTED only after that green run.
-4. Update CURRENT-STATE and this handoff with the green run evidence.
-5. Immediately begin Round 3: Intelligent Storefront backend — authoritative mug/model catalog, tags/search/filter/recommendation, compare/select and project binding.
-6. Keep external credentials out of the critical path; use interfaces/mocks where needed.
+3. Mark Phase B ACCEPTED only after that green run.
+4. Continue Round 3: persist authoritative catalog fields/tags/pricing, implement repository/API search/recommend/compare/select and project binding; add migration only for proven schema gaps.
+5. Keep external credentials out of the critical path; use interfaces/mocks where needed.
+6. Update CURRENT-STATE/HANDOFF after substantial progress.
 
 Never reintroduce Meta, WhatsApp or Make runtime code. Never program in `osvaldosereia/CHAT`. Do not mix Dona Antônia or any other project.
