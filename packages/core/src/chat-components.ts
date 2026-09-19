@@ -5,7 +5,8 @@ export type ChatComponent =
   | { type: 'quick_replies'; options: Array<{ id: string; label: string }> }
   | { type: 'action_buttons'; actions: Array<{ id: string; label: string; action: string }> }
   | { type: 'upload_request'; media: 'image' | 'audio' | 'image_or_audio'; prompt?: string }
-  | { type: 'notice'; text: string; tone?: 'info' | 'success' | 'warning' };
+  | { type: 'notice'; text: string; tone?: 'info' | 'success' | 'warning' }
+  | { type: 'storefront_carousel'; items: Array<{ templateId: string; name: string; description?: string; priceCents: number; capacityMl?: number; imageUrl?: string }> };
 
 export interface ChatComponentEnvelope {
   version: typeof CHAT_COMPONENT_PROTOCOL_VERSION;
@@ -18,6 +19,11 @@ function text(value: unknown, field: string, max = 500): string {
   if (!normalized) throw new Error(`${field} is required`);
   if (normalized.length > max) throw new Error(`${field} is too long`);
   return normalized;
+}
+
+function nonNegativeInteger(value: unknown, field: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error(`${field} must be a non-negative integer`);
+  return Number(value);
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -51,6 +57,20 @@ export function validateChatComponentEnvelope(value: unknown): ChatComponentEnve
       case 'action_buttons': {
         if (!Array.isArray(item.actions) || item.actions.length < 1 || item.actions.length > 3) throw new Error('action buttons require 1 to 3 actions');
         return { type: 'action_buttons', actions: item.actions.map((action) => { const a = record(action); return { id: text(a.id, 'action id', 80), label: text(a.label, 'action label', 120), action: text(a.action, 'action', 120) }; }) };
+      }
+      case 'storefront_carousel': {
+        if (!Array.isArray(item.items) || item.items.length < 1 || item.items.length > 8) throw new Error('storefront carousel requires 1 to 8 items');
+        return { type: 'storefront_carousel', items: item.items.map((rawItem) => {
+          const catalog = record(rawItem);
+          return {
+            templateId: text(catalog.templateId, 'template id', 80),
+            name: text(catalog.name, 'template name', 160),
+            ...(catalog.description === undefined ? {} : { description: text(catalog.description, 'template description', 500) }),
+            priceCents: nonNegativeInteger(catalog.priceCents, 'price cents'),
+            ...(catalog.capacityMl === undefined ? {} : { capacityMl: nonNegativeInteger(catalog.capacityMl, 'capacity ml') }),
+            ...(catalog.imageUrl === undefined ? {} : { imageUrl: text(catalog.imageUrl, 'image url', 1000) }),
+          };
+        }) };
       }
       default:
         throw new Error('unsupported chat component type');
