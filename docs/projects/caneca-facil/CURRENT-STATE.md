@@ -15,16 +15,15 @@ Project `ijquzclfijwfgwupoxmg` remains the authority. Round 3 applied `storefron
 Rounds 1-2 are accepted. CI `35428936326` proved tests, typecheck, no-Meta guard, production build and API smoke. Same-engine multi-turn acceptance is documented in `docs/acceptance/phase-b-conversational-ai.md`.
 
 ## Phase C — ACTIVE
-Deterministic active-only search, tag/price/capacity filtering, contextual recommendations and bounded comparison live in core. Supabase persistence maps only sellable templates and selection validates active project plus active/priced template before binding.
+Deterministic active-only search, tag/price/capacity filtering, contextual recommendations and bounded comparison live in core. Supabase persistence maps only sellable templates and selection validates active project plus active/priced template before binding. StorefrontService and session-scoped own-chat routes provide search, recommend, compare and select; callers cannot override session ownership with conversation/project ids.
 
-StorefrontService and session-scoped own-chat routes provide search, recommend, compare and select. Selection remains server-authoritative and derives conversation ownership exclusively from the HttpOnly session; callers cannot submit a conversation/project id.
+The latest CI exposed a storefront fixture drift (`priceCents` versus the canonical `basePriceCents`) during Test. That regression was corrected in `75e117bd`; the product contract remains server-authoritative.
 
-This round added service tests and route security tests covering session requirement, normalized filters, wrong-origin rejection, invalid selection, protected-domain error mapping and proof that caller-supplied conversation/project ids cannot override session ownership. It also began Round 4 safely by extending the bounded chat protocol with a validated `storefront_carousel` carrying at most eight server-priced templates; arbitrary/negative prices and oversized payloads are rejected.
-
-Commits this round: `101fca7a`, `4e262596`, `98c28ecb`, `06e09b34`.
+## Round 4 — ACTIVE
+The bounded protocol supports validated `storefront_carousel` payloads (maximum eight server-priced models). The customer chat now consumes carousel components from persisted structured content and live SSE, renders a calm horizontal model browser with BRL prices, and selects only through the session-scoped `/v1/chat/storefront/select` endpoint. The browser never sends conversation/project ownership. Client API commit: `77d7a183`; rendering commit: `592f09fb`; responsive styling: `be9f42e2`.
 
 ## Next executable work
-1. Add Supabase storefront adapter tests for inactive/unpriced rejection and active-project binding.
-2. Run/inspect CI for the new tests and component protocol; fix any regression before declaring Round 3 complete.
-3. Continue Round 4: render `storefront_carousel` in the customer chat and connect selection actions to `/v1/chat/storefront/select`.
-4. Keep displayed price and protected selection state server-authoritative; AI may request/recommend catalog context but must never invent price.
+1. Inspect the next CI after the fixture correction and chat carousel integration; fix any test/type/build regression.
+2. Add Supabase storefront adapter tests for inactive/unpriced rejection and active-project binding, then close Round 3 formally.
+3. Add focused chat/API tests for carousel restoration, live component handling and session-scoped selection; close Round 4 when green.
+4. Immediately begin Round 5 creative-production provider/store contracts and immutable art-version pipeline without waiting for external credentials.
