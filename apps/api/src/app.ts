@@ -1,5 +1,9 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import type { ConversationOrchestrator } from './ai/conversation-orchestrator.js';
+import { createConversationOrchestrator } from './ai/conversation-orchestrator.js';
+import { createOpenAIConversationInterpreter } from './ai/conversation-interpreter.js';
+import { createSupabaseConversationBriefingStore } from './ai/supabase-briefing-store.js';
 import type { ChatMessageStore } from './chat/message-store.js';
 import { registerChatSessionRoutes } from './chat/session-routes.js';
 import type { ChatSessionStore } from './chat/session-store.js';
@@ -18,6 +22,7 @@ export interface ApiAppDependencies {
   sessionStore?: ChatSessionStore;
   messageStore?: ChatMessageStore;
   mediaStore?: ChatMediaStore;
+  conversationOrchestrator?: ConversationOrchestrator;
 }
 
 function canCreateSupabaseStore(config: ApiAppConfig): boolean {
@@ -31,44 +36,46 @@ function createSupabaseClient(config: ApiAppConfig) {
   });
 }
 
-function resolveSessionStore(
-  config: ApiAppConfig,
-  dependencies: ApiAppDependencies,
-): ChatSessionStore | undefined {
+function resolveSessionStore(config: ApiAppConfig, dependencies: ApiAppDependencies): ChatSessionStore | undefined {
   if (dependencies.sessionStore) return dependencies.sessionStore;
   if (!canCreateSupabaseStore(config)) return undefined;
   return createSupabaseChatSessionStore(createSupabaseClient(config));
 }
 
-function resolveMessageStore(
-  config: ApiAppConfig,
-  dependencies: ApiAppDependencies,
-): ChatMessageStore | undefined {
+function resolveMessageStore(config: ApiAppConfig, dependencies: ApiAppDependencies): ChatMessageStore | undefined {
   if (dependencies.messageStore) return dependencies.messageStore;
   if (!canCreateSupabaseStore(config)) return undefined;
   return createSupabaseChatMessageStore(createSupabaseClient(config));
 }
 
-function resolveMediaStore(
-  config: ApiAppConfig,
-  dependencies: ApiAppDependencies,
-): ChatMediaStore | undefined {
+function resolveMediaStore(config: ApiAppConfig, dependencies: ApiAppDependencies): ChatMediaStore | undefined {
   if (dependencies.mediaStore) return dependencies.mediaStore;
   if (!canCreateSupabaseStore(config)) return undefined;
   return createSupabaseChatMediaStore(createSupabaseClient(config));
 }
 
-export function createApiApp(
-  config: ApiAppConfig = {},
-  dependencies: ApiAppDependencies = {},
-) {
+function resolveConversationOrchestrator(
+  config: ApiAppConfig,
+  dependencies: ApiAppDependencies,
+): ConversationOrchestrator | undefined {
+  if (dependencies.conversationOrchestrator) return dependencies.conversationOrchestrator;
+  if (!canCreateSupabaseStore(config) || !config.openAiApiKey?.trim()) return undefined;
+
+  const client = createSupabaseClient(config);
+  return createConversationOrchestrator({
+    briefingStore: createSupabaseConversationBriefingStore(client),
+    interpreter: createOpenAIConversationInterpreter({
+      apiKey: config.openAiApiKey,
+      model: config.openAiConversationModel,
+    }),
+  });
+}
+
+export function createApiApp(config: ApiAppConfig = {}, dependencies: ApiAppDependencies = {}) {
   const app = new Hono();
 
   app.get('/health', (context) =>
-    context.json({
-      status: 'ok',
-      service: 'caneca-facil-api',
-    }),
+    context.json({ status: 'ok', service: 'caneca-facil-api' }),
   );
 
   if (config.chatOrigin?.trim()) {
@@ -86,6 +93,7 @@ export function createApiApp(
   const sessionStore = resolveSessionStore(config, dependencies);
   const messageStore = resolveMessageStore(config, dependencies);
   const mediaStore = resolveMediaStore(config, dependencies);
+  const orchestrator = resolveConversationOrchestrator(config, dependencies);
 
   if (
     sessionStore &&
@@ -108,6 +116,7 @@ export function createApiApp(
         messageStore,
         chatOrigin: config.chatOrigin,
         sessionCookieName: config.sessionCookieName,
+        orchestrator,
       });
     }
 

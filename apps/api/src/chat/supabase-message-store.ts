@@ -55,10 +55,7 @@ export function createSupabaseChatMessageStore(
         .select('*')
         .single();
 
-      if (!error && data) {
-        return { accepted: true, message: mapMessage(data as MessageRow) };
-      }
-
+      if (!error && data) return { accepted: true, message: mapMessage(data as MessageRow) };
       if (!isUniqueViolation(error)) {
         throw new Error(`Failed to persist customer chat message: ${error?.message ?? 'unknown error'}`);
       }
@@ -70,14 +67,8 @@ export function createSupabaseChatMessageStore(
         .eq('client_message_id', input.clientMessageId)
         .maybeSingle();
 
-      if (existing.error || !existing.data) {
-        throw new Error('Duplicate chat message exists but could not be resolved');
-      }
-
-      return {
-        accepted: false,
-        message: mapMessage(existing.data as MessageRow),
-      };
+      if (existing.error || !existing.data) throw new Error('Duplicate chat message exists but could not be resolved');
+      return { accepted: false, message: mapMessage(existing.data as MessageRow) };
     },
 
     async ensureAssistantDraft(input) {
@@ -96,10 +87,7 @@ export function createSupabaseChatMessageStore(
         .select('*')
         .single();
 
-      if (!error && data) {
-        return { reused: false, message: mapMessage(data as MessageRow) };
-      }
-
+      if (!error && data) return { reused: false, message: mapMessage(data as MessageRow) };
       if (!isUniqueViolation(error)) {
         throw new Error(`Failed to persist assistant chat draft: ${error?.message ?? 'unknown error'}`);
       }
@@ -110,21 +98,16 @@ export function createSupabaseChatMessageStore(
         .eq('reply_to_message_id', input.replyToMessageId)
         .maybeSingle();
 
-      if (existing.error || !existing.data) {
-        throw new Error('Assistant draft exists but could not be resolved');
-      }
-
-      return {
-        reused: true,
-        message: mapMessage(existing.data as MessageRow),
-      };
+      if (existing.error || !existing.data) throw new Error('Assistant draft exists but could not be resolved');
+      return { reused: true, message: mapMessage(existing.data as MessageRow) };
     },
 
-    async completeAssistant(messageId, text) {
+    async completeAssistant(messageId, text, structuredContent = {}) {
       const { data, error } = await client
         .from('messages')
         .update({
           text_content: text,
+          structured_content: structuredContent,
           processing_state: 'completed',
           updated_at: new Date().toISOString(),
         })
@@ -135,22 +118,15 @@ export function createSupabaseChatMessageStore(
       if (error || !data) {
         throw new Error(`Failed to complete assistant message: ${error?.message ?? 'unknown error'}`);
       }
-
       return mapMessage(data as MessageRow);
     },
 
     async failAssistant(messageId) {
       const { error } = await client
         .from('messages')
-        .update({
-          processing_state: 'failed',
-          updated_at: new Date().toISOString(),
-        })
+        .update({ processing_state: 'failed', updated_at: new Date().toISOString() })
         .eq('id', messageId);
-
-      if (error) {
-        throw new Error(`Failed to mark assistant message as failed: ${error.message}`);
-      }
+      if (error) throw new Error(`Failed to mark assistant message as failed: ${error.message}`);
     },
 
     async listConversation(conversationId) {
@@ -159,11 +135,7 @@ export function createSupabaseChatMessageStore(
         .select('*')
         .eq('conversation_id', conversationId)
         .order('created_at', { ascending: true });
-
-      if (error) {
-        throw new Error(`Failed to load conversation history: ${error.message}`);
-      }
-
+      if (error) throw new Error(`Failed to load conversation history: ${error.message}`);
       return (data ?? []).map((row) => mapMessage(row as MessageRow));
     },
   };
