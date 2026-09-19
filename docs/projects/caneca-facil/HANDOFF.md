@@ -16,12 +16,12 @@ Phase A is complete. Round 1 is complete. Round 2 remains at its final CI gate; 
 
 Round 1 integrated Phase B intelligence into the real own-chat turn path: transactional Supabase briefing store, orchestrator, `ai | human | paused` gate, validated component SSE, durable assistant `structured_content`, retry replay and optional backend-only OpenAI runtime.
 
-Round 2 added same-engine multi-turn acceptance coverage and `docs/acceptance/phase-b-conversational-ai.md`. CI run `35423599351` at `d78fe22b` passed tests, typecheck and no-Meta but still failed production Build, so Phase B must NOT yet be marked accepted. Commit `3296ff73` corrected the package boundary so workspace consumers resolve `@caneca-facil/core` from built `dist` declarations/runtime consistently under NodeNext. Await/inspect the next PR CI and continue fixing until Build + production API smoke are green.
+Round 2 added same-engine multi-turn acceptance coverage and `docs/acceptance/phase-b-conversational-ai.md`. PR CI run `35426095848` proved tests, typecheck, anti-Meta and production Build green. Its only failure was production API smoke because Node ESM could not resolve `packages/core/dist/phone` from `dist/customer.js`. Commit `547ed7f4` changes the internal core import to `./phone.js`. Await/inspect fresh PR CI and mark Phase B ACCEPTED only after smoke is green.
 
 Round 3 independent work has started: deterministic server-authoritative storefront contracts/search/filter/recommendation/compare live in `packages/core/src/storefront.ts` with tests. Commits: `75bba165`, `9bd0c3fb`, `4cdec552`.
 
 ## Continue autonomously
-1. Inspect newest PR #8 CI after `3296ff73` and subsequent storefront commits.
+1. Inspect newest PR #8 CI after `547ed7f4` / this documentation checkpoint.
 2. Fix any remaining CI failure until tests, typecheck, no-Meta, build and production API smoke are all green.
 3. Mark Phase B ACCEPTED only after that green run.
 4. Continue Round 3: persist authoritative catalog fields/tags/pricing, implement repository/API search/recommend/compare/select and project binding; add migration only for proven schema gaps.
