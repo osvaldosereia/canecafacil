@@ -12,12 +12,19 @@ Complete and accepted. Own chat, anonymous session, SSE, provider-neutral messag
 Project `ijquzclfijwfgwupoxmg` already has the own-chat and creative-domain persistence needed for current Phase B work, including versioned briefings. No database migration is justified by the work completed so far.
 
 ## Phase B
-In progress. Deterministic briefing merge/correction/readiness/minimum-next-question is implemented and covered. A versioned bounded rich-component protocol is now implemented in `packages/core/src/chat-components.ts` and exported by core. Version 1 currently permits only validated text, quick replies, action buttons, upload requests and notices; arbitrary HTML/unknown component types and unsupported protocol versions are rejected. Counts and text lengths are bounded so an interpreter cannot inject an unrestricted UI tree.
+In progress. Deterministic briefing merge/correction/readiness/minimum-next-question is implemented and covered. The bounded versioned rich-component protocol is implemented in `packages/core/src/chat-components.ts` and exported by core.
 
-Latest component-protocol commits:
-- `131599e9` — protocol implementation.
-- `84a31f16` — validation coverage.
-- `5bc61890` — public core export.
+A backend-only typed conversation interpreter boundary now exists at `apps/api/src/ai/conversation-interpreter.ts`. It returns only conversational reply text, a `BriefingPatch` of interpreted facts, and optional bounded rich components. Provider output is validated before use; arbitrary UI is rejected. A deterministic interpreter is included for tests/simulation so orchestration does not require live OpenAI calls.
+
+Latest interpreter commits:
+- `b16c9d95` — typed interpreter/provider boundary and deterministic implementation.
+- `2e20b35f` — validation and safety tests.
 
 ## Next executable work
-Add the backend-only typed conversation interpreter/provider boundary and deterministic fake for tests. Then wire orchestration into the existing own-chat turn/SSE flow, validate all interpreter output through the core protocol, persist final assistant structured content, and add same-engine simulation/Phase B acceptance. Do not add schema changes unless a concrete persistence gap is proven.
+1. Add the production OpenAI interpreter adapter behind this interface with compact structured output and backend-only credentials.
+2. Add a briefing repository/orchestrator that loads current briefing, applies interpreter facts through `mergeBriefing`, evaluates readiness in deterministic code and versions the result.
+3. Wire that orchestration into own-chat turns while honoring conversation `automation_mode`.
+4. Stream validated components over SSE and persist final assistant structured content.
+5. Add same-engine simulation and Phase B acceptance evidence.
+
+Do not add schema changes unless a concrete persistence gap is proven.
