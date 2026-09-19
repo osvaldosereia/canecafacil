@@ -7,3 +7,4 @@ export * from './conversation.js';
 export * from './customer.js';
 export * from './phone.js';
 export * from './project-status.js';
+export * from './storefront.js';
