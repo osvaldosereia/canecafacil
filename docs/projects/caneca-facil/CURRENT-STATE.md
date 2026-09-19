@@ -16,13 +16,13 @@ Project `ijquzclfijwfgwupoxmg` remains the authority. Existing schema contains c
 ## Phase B
 Round 1 implementation is complete: Supabase briefing adapter, real turn orchestration, structured assistant content, validated component SSE, retry replay, OpenAI backend adapter and ownership gates.
 
-Round 2 remains in final CI verification. Run `35423599351` for `d78fe22b` passed Test, Typecheck and Reject active Meta dependencies, but Build failed and production API smoke was skipped. Phase B therefore remains NOT ACCEPTED. Commit `3296ff73` changed `@caneca-facil/core` to expose built `dist/index.d.ts` and `dist/index.js` consistently, with root scripts already building core before consumers. A fresh PR CI is required to prove the fix.
+Round 2 remains in final CI verification. PR CI run `35426095848` proved Test, Typecheck, anti-Meta guard and production Build are green. The only remaining failure is the production API smoke: Node ESM could not resolve `packages/core/dist/phone` imported by `dist/customer.js`. Commit `547ed7f4` fixes the source import to `./phone.js`; a fresh PR CI must prove the runtime smoke before Phase B is marked accepted.
 
 ## Phase C
-Round 3 started on work independent of the Phase B CI gate. `packages/core/src/storefront.ts` now defines authoritative catalog item/query contracts plus deterministic active-only search, tag/price/capacity filtering, contextual recommendation ranking and bounded compare semantics. Tests cover search, ranking and exclusion of inactive models. Commits: `75bba165`, `9bd0c3fb`, `4cdec552`.
+Round 3 started on work independent of the Phase B CI gate. `packages/core/src/storefront.ts` defines authoritative catalog item/query contracts plus deterministic active-only search, tag/price/capacity filtering, contextual recommendation ranking and bounded compare semantics. Tests cover search, ranking and exclusion of inactive models. Commits: `75bba165`, `9bd0c3fb`, `4cdec552`.
 
 ## Next executable work
-1. Require fully green PR #8 CI including production Build and API smoke; fix residual issues and then mark Phase B accepted.
+1. Require fully green PR #8 CI including production API smoke after `547ed7f4`; then mark Phase B accepted.
 2. Continue Round 3 persistence/API layer for catalog search/recommend/compare/select/project binding.
-3. Add Supabase migration only if existing `mug_templates` cannot represent the authoritative storefront fields safely.
+3. Add Supabase migration only if existing `mug_templates` cannot represent authoritative storefront fields safely.
 4. Keep pricing and selection server-authoritative and deterministic.
