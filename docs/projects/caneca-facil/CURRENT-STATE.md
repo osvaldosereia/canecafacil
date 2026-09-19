@@ -5,24 +5,26 @@ Updated: 2026-09-19
 ## Repository
 Phase A base: `db92bf43d74235cdaca9d8794ad188c6ad871efe`.
 Active implementation branch: `phase-b-conversational-ai`.
-Draft PR: `#8` — do not merge until Phase B acceptance is green.
+Draft PR: `#8`.
 
 ## Phase A
 Complete and accepted. Own chat, anonymous session, SSE, provider-neutral messages, durable history and private direct uploads are present. Active runtime is Meta/WhatsApp-free.
 
 ## Supabase
-Project `ijquzclfijwfgwupoxmg` remains the authority. Existing schema contains conversation ownership, structured messages, projects, versioned briefings, mug templates and private media foundations with RLS. No schema change was made in this round because Round 3 persistence gaps must be proven before migration.
+Project `ijquzclfijwfgwupoxmg` remains the authority. Round 3 proved a storefront schema gap and applied migration `storefront_catalog_fields`: `mug_templates` now has description, tags, authoritative `base_price_cents`, image URL and indexes. Null price deliberately means the template is not sellable until configured. RLS remains enabled.
 
-## Phase B
+## Phase B — ACCEPTED
 Round 1 implementation is complete: Supabase briefing adapter, real turn orchestration, structured assistant content, validated component SSE, retry replay, OpenAI backend adapter and ownership gates.
 
-Round 2 remains in final CI verification. PR CI run `35426095848` proved Test, Typecheck, anti-Meta guard and production Build are green. The only remaining failure is the production API smoke: Node ESM could not resolve `packages/core/dist/phone` imported by `dist/customer.js`. Commit `547ed7f4` fixes the source import to `./phone.js`; a fresh PR CI must prove the runtime smoke before Phase B is marked accepted.
+Round 2 is accepted. CI run `35428936326` on checkpoint `d7c910e7` completed successfully after the Node ESM core import correction, proving the full repository CI including production API smoke. Same-engine multi-turn acceptance coverage and correction preservation are documented in `docs/acceptance/phase-b-conversational-ai.md`.
 
-## Phase C
-Round 3 started on work independent of the Phase B CI gate. `packages/core/src/storefront.ts` defines authoritative catalog item/query contracts plus deterministic active-only search, tag/price/capacity filtering, contextual recommendation ranking and bounded compare semantics. Tests cover search, ranking and exclusion of inactive models. Commits: `75bba165`, `9bd0c3fb`, `4cdec552`.
+## Phase C — ACTIVE
+Round 3 is active. `packages/core/src/storefront.ts` provides deterministic active-only search, tag/price/capacity filtering, contextual recommendation ranking and bounded comparison. The persistence gap is now closed in Supabase and mirrored by repository migration `20260919041600_storefront_catalog_fields.sql`.
+
+API persistence contracts were added in `apps/api/src/storefront/`: catalog reads map only sellable templates (configured integer-cent price), and project binding validates that the conversation has an active project and that the selected template is active/sellable before updating the project.
 
 ## Next executable work
-1. Require fully green PR #8 CI including production API smoke after `547ed7f4`; then mark Phase B accepted.
-2. Continue Round 3 persistence/API layer for catalog search/recommend/compare/select/project binding.
-3. Add Supabase migration only if existing `mug_templates` cannot represent authoritative storefront fields safely.
+1. Add storefront service/routes for search/recommend/compare/select using the deterministic core and Supabase store.
+2. Add route/store tests including inactive/unpriced rejection and conversation/project binding.
+3. Expose bounded storefront components through the chat protocol and then advance Round 4 UI integration.
 4. Keep pricing and selection server-authoritative and deterministic.
