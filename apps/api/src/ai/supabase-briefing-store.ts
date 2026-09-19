@@ -3,26 +3,33 @@ import { createEmptyBriefing, type Briefing, type CreationMode } from '@caneca-f
 import type { ConversationBriefingStore } from './briefing-store.js';
 
 type BriefingRow = {
-  id: string;
+  id?: string;
+  project_id?: string;
+  version?: number;
+  creation_mode?: CreationMode | null;
+  occasion?: string | null;
+  recipient?: string | null;
+  main_theme?: string | null;
+  desired_style?: string | null;
+  color_preferences?: string[] | null;
+  mandatory_text?: string[] | null;
+  names?: string[] | null;
+  dates?: string[] | null;
+  mandatory_elements?: string[] | null;
+  forbidden_elements?: string[] | null;
+  reference_items?: Briefing['references'] | null;
+  composition_notes?: string | null;
+  creative_direction?: string | null;
+  missing_information?: string[] | null;
+  confidence_score?: number | string | null;
+  ready_to_generate?: boolean | null;
+};
+
+type BriefingStateRpcRow = {
   project_id: string;
+  briefing_id: string;
   version: number;
-  creation_mode: CreationMode | null;
-  occasion: string | null;
-  recipient: string | null;
-  main_theme: string | null;
-  desired_style: string | null;
-  color_preferences: string[] | null;
-  mandatory_text: string[] | null;
-  names: string[] | null;
-  dates: string[] | null;
-  mandatory_elements: string[] | null;
-  forbidden_elements: string[] | null;
-  reference_items: Briefing['references'] | null;
-  composition_notes: string | null;
-  creative_direction: string | null;
-  missing_information: string[] | null;
-  confidence_score: number | string | null;
-  ready_to_generate: boolean;
+  briefing: BriefingRow;
 };
 
 export function mapBriefingRow(row: BriefingRow): Briefing {
@@ -43,31 +50,7 @@ export function mapBriefingRow(row: BriefingRow): Briefing {
     ...(row.creative_direction ? { creativeDirection: row.creative_direction } : {}),
     missingInformation: row.missing_information ?? [],
     confidenceScore: Number(row.confidence_score ?? 0),
-    readyToGenerate: row.ready_to_generate,
-  };
-}
-
-function briefingInsert(projectId: string, version: number, briefing: Briefing) {
-  return {
-    project_id: projectId,
-    version,
-    creation_mode: briefing.creationMode,
-    occasion: briefing.occasion ?? null,
-    recipient: briefing.recipient ?? null,
-    main_theme: briefing.mainTheme ?? null,
-    desired_style: briefing.desiredStyle ?? null,
-    color_preferences: briefing.colorPreferences,
-    mandatory_text: briefing.mandatoryText,
-    names: briefing.names,
-    dates: briefing.dates,
-    mandatory_elements: briefing.mandatoryElements,
-    forbidden_elements: briefing.forbiddenElements,
-    reference_items: briefing.references,
-    composition_notes: briefing.compositionNotes ?? null,
-    creative_direction: briefing.creativeDirection ?? null,
-    missing_information: briefing.missingInformation,
-    confidence_score: briefing.confidenceScore,
-    ready_to_generate: briefing.readyToGenerate,
+    readyToGenerate: Boolean(row.ready_to_generate),
   };
 }
 
@@ -83,110 +66,85 @@ export function createSupabaseConversationBriefingStore(
         .single();
 
       if (conversation.error || !conversation.data) {
-        throw new Error(`Failed to load conversation briefing context: ${conversation.error?.message ?? 'conversation not found'}`);
+        throw new Error(
+          `Failed to load conversation briefing context: ${conversation.error?.message ?? 'conversation not found'}`,
+        );
       }
 
-      const projectId = conversation.data.active_project_id as string | null;
-      const automationMode = conversation.data.automation_mode as 'ai' | 'human' | 'paused';
-      if (!projectId) {
+      const automationMode = conversation.data.automation_mode as
+        | 'ai'
+        | 'human'
+        | 'paused';
+
+      if (automationMode !== 'ai') {
         return {
           conversationId,
           automationMode,
-          projectId: null,
+          projectId: (conversation.data.active_project_id as string | null) ?? null,
           briefingId: null,
           briefing: createEmptyBriefing(),
         };
       }
 
-      const project = await client
-        .from('mug_projects')
-        .select('id,current_briefing_id,creation_mode')
-        .eq('id', projectId)
-        .eq('conversation_id', conversationId)
+      const ensured = await client
+        .rpc('ensure_chat_briefing_state', {
+          p_conversation_id: conversationId,
+        })
         .single();
 
-      if (project.error || !project.data) {
-        throw new Error(`Failed to load active mug project: ${project.error?.message ?? 'project not found'}`);
+      if (ensured.error || !ensured.data) {
+        throw new Error(
+          `Failed to ensure conversation briefing state: ${ensured.error?.message ?? 'unknown error'}`,
+        );
       }
 
-      const briefingId = project.data.current_briefing_id as string | null;
-      if (!briefingId) {
-        return {
-          conversationId,
-          automationMode,
-          projectId,
-          briefingId: null,
-          briefing: createEmptyBriefing((project.data.creation_mode as CreationMode | null) ?? 'from_scratch'),
-        };
-      }
-
-      const briefingResult = await client
-        .from('briefings')
-        .select('*')
-        .eq('id', briefingId)
-        .eq('project_id', projectId)
-        .single();
-
-      if (briefingResult.error || !briefingResult.data) {
-        throw new Error(`Failed to load current briefing: ${briefingResult.error?.message ?? 'briefing not found'}`);
-      }
-
+      const state = ensured.data as BriefingStateRpcRow;
       return {
         conversationId,
         automationMode,
-        projectId,
-        briefingId,
-        briefing: mapBriefingRow(briefingResult.data as BriefingRow),
+        projectId: state.project_id,
+        briefingId: state.briefing_id,
+        briefing: mapBriefingRow(state.briefing),
       };
     },
 
     async saveVersion(input) {
-      const latest = await client
+      if (!input.previousBriefingId) {
+        throw new Error('Cannot append briefing version without a current briefing');
+      }
+
+      const previous = await client
         .from('briefings')
         .select('version')
+        .eq('id', input.previousBriefingId)
         .eq('project_id', input.projectId)
-        .order('version', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (latest.error) {
-        throw new Error(`Failed to resolve briefing version: ${latest.error.message}`);
-      }
-      const version = Number(latest.data?.version ?? 0) + 1;
-
-      const inserted = await client
-        .from('briefings')
-        .insert(briefingInsert(input.projectId, version, input.briefing))
-        .select('id,version')
         .single();
 
-      if (inserted.error || !inserted.data) {
-        throw new Error(`Failed to persist briefing version: ${inserted.error?.message ?? 'unknown error'}`);
+      if (previous.error || !previous.data) {
+        throw new Error(
+          `Failed to resolve current briefing version: ${previous.error?.message ?? 'briefing not found'}`,
+        );
       }
 
-      let projectUpdate = client
-        .from('mug_projects')
-        .update({
-          current_briefing_id: inserted.data.id,
-          status: input.briefing.readyToGenerate ? 'ready_to_generate' : 'building_briefing',
-          updated_at: new Date().toISOString(),
+      const appended = await client
+        .rpc('append_chat_briefing_version', {
+          p_conversation_id: input.conversationId,
+          p_project_id: input.projectId,
+          p_expected_version: Number(previous.data.version),
+          p_briefing: input.briefing,
         })
-        .eq('id', input.projectId)
-        .eq('conversation_id', input.conversationId);
+        .single();
 
-      projectUpdate = input.previousBriefingId
-        ? projectUpdate.eq('current_briefing_id', input.previousBriefingId)
-        : projectUpdate.is('current_briefing_id', null);
-
-      const updated = await projectUpdate.select('id').maybeSingle();
-      if (updated.error || !updated.data) {
-        await client.from('briefings').delete().eq('id', inserted.data.id);
-        throw new Error(`Failed to advance current briefing pointer: ${updated.error?.message ?? 'concurrent briefing update'}`);
+      if (appended.error || !appended.data) {
+        throw new Error(
+          `Failed to append briefing version: ${appended.error?.message ?? 'unknown error'}`,
+        );
       }
 
+      const state = appended.data as BriefingStateRpcRow;
       return {
-        briefingId: inserted.data.id as string,
-        version: Number(inserted.data.version),
+        briefingId: state.briefing_id,
+        version: Number(state.version),
       };
     },
   };
