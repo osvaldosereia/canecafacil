@@ -486,7 +486,9 @@ export async function startStudioJob(
     }
   }
 
-  void runGeneration(client, openai, project, input, model);
+  void runGeneration(client, openai, project, input, model).catch((error) => {
+    console.error('[caneca-studio] unexpected background failure', error);
+  });
   return { projectId: project.projectId, status: 'generating_art' };
 }
 

@@ -58,12 +58,12 @@ function isFileEntry(value: FormDataEntryValue | null): value is File {
 }
 
 async function parseStudioInput(form: FormData): Promise<StudioJobInput> {
-  const title = readText(form, 'title', 100, true);
   const mode = readText(form, 'creationMode', 20, true);
   const mainTheme = readText(form, 'mainTheme', 500, true);
-  if (!title || !mainTheme || (mode !== 'reference' && mode !== 'from_scratch')) {
+  if (!mainTheme || (mode !== 'reference' && mode !== 'from_scratch')) {
     throw new InvalidStudioInput();
   }
+  const title = readText(form, 'title', 100) ?? ('Caneca - ' + mainTheme.slice(0, 80));
 
   const fileEntry = form.get('reference');
   let reference: StudioReference | null = null;

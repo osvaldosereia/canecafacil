@@ -16,7 +16,7 @@
 - OpenAI and Supabase secret keys stay in the API environment.
 - Only `admin_membership_lookup` members can create or inspect studio jobs.
 - Art and mockups stay in private buckets and are returned as signed URLs.
-- Art output is 2300×1000; the two mockups are 1024×1024.
+- Art follows the active template output dimensions, rounded down to model-compatible 16 px increments; without template dimensions it uses 2304×944. The two mockups are 1024×1024.
 - The generation flow creates an internal project; it does not publish a catalog product.
 
 ## Review Focus
@@ -38,12 +38,12 @@
 
 **Produces:** Admin-only create/poll routes, asynchronous job state in `mug_projects`, OpenAI artwork and mockup generation, and versioned Supabase records.
 
-- [ ] Validate bearer token with Supabase Auth and require a matching row in `admin_membership_lookup`.
-- [ ] Validate request fields and optional image bytes before creating a project.
-- [ ] Persist a closed internal conversation, project, and ready briefing.
-- [ ] Generate one print artwork and two mockups through the backend OpenAI client.
-- [ ] Save to the existing private storage buckets and create immutable version rows.
-- [ ] Return signed result URLs through an admin-authenticated poll route.
+- [x] Validate bearer token with Supabase Auth and require a matching row in `admin_membership_lookup`.
+- [x] Validate request fields and optional image bytes before creating a project.
+- [x] Persist a closed internal conversation, project, and ready briefing.
+- [x] Generate one print artwork and two mockups through the backend OpenAI client.
+- [x] Save to the existing private storage buckets and create immutable version rows.
+- [x] Return signed result URLs through an admin-authenticated poll route.
 
 ### Task 2: Admin Studio interface
 
@@ -53,9 +53,9 @@
 
 **Produces:** Mobile-friendly Admin navigation, generation form, progress state, and result links.
 
-- [ ] Add an Estúdio section that uses the existing signed-in Supabase client.
-- [ ] Submit text fields and an optional image without exposing credentials.
-- [ ] Poll job state until `needs_review` or `failed` and render the art plus both mockups.
+- [x] Add an Estúdio section that uses the existing signed-in Supabase client.
+- [x] Submit text fields and an optional image without exposing credentials.
+- [x] Poll job state until `needs_review` or `failed` and render the art plus both mockups.
 
 ### Task 3: Configuration and delivery notes
 
@@ -63,9 +63,9 @@
 - Update the API and Admin environment examples.
 - Keep the design and implementation decisions in this spec and plan.
 
-- [ ] Document `OPENAI_API_KEY`, exact `ADMIN_ORIGIN`, and `VITE_API_URL` requirements.
-- [ ] Review the changed files and confirm the legacy Make scenario remains inactive.
+- [x] Document `OPENAI_API_KEY`, exact `ADMIN_ORIGIN`, and `VITE_API_URL` requirements.
+- [x] Review the changed files and confirm the legacy Make scenario remains inactive.
 
 ## Verification status
 
-The implementation workspace is a GitHub feature branch; the repository is not mounted locally. No test or build command is run in this plan. Production activation also requires the Caneca Fácil Supabase project and server environment to be accessible.
+The implementation is committed to the `feat/admin-caneca-studio` branch in `osvaldosereia/canecafacil`. Changed files were read back for static review; no test or build command was run. Runtime activation is still pending access to the correct Caneca Fácil Supabase project and configuration of the Admin/API runtime variables.

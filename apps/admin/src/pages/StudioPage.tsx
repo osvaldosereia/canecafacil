@@ -162,16 +162,16 @@ export function StudioPage({ client, apiUrl }: StudioPageProps) {
 
             <label className="studio-field">
               <span>Nome do projeto</span>
-              <input name="title" maxLength={100} required placeholder="Ex.: Presente da Marina" />
+              <input name="title" maxLength={100} placeholder="Opcional · Ex.: Presente da Marina" />
             </label>
 
             <div className="studio-field">
               <span>Como vamos começar?</span>
               <div className="studio-mode">
-                <label><input type="radio" checked={mode === 'from_scratch'} onChange={() => {
+                <label><input type="radio" name="studioMode" checked={mode === 'from_scratch'} onChange={() => {
                   setMode('from_scratch'); setReference(null);
                 }} /> Do zero</label>
-                <label><input type="radio" checked={mode === 'reference'} onChange={() => setMode('reference')} /> Com referência</label>
+                <label><input type="radio" name="studioMode" checked={mode === 'reference'} onChange={() => setMode('reference')} /> Com referência</label>
               </div>
             </div>
 
