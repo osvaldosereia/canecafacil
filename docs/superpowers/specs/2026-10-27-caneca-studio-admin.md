@@ -9,7 +9,7 @@ Restaurar no repositório oficial Caneca Fácil uma ferramenta interna para cria
 - O Estúdio aparece como uma seção do Admin atual.
 - A equipe informa tema, título opcional, estilo, paleta, detalhes, textos obrigatórios e elementos a evitar.
 - A equipe pode anexar uma imagem de referência em PNG, JPEG ou WebP, limitada a 8 MB.
-- O fluxo gera uma arte horizontal usando as dimensões do gabarito ativo; se elas ainda não estiverem definidas, usa 2304×944 px. Também gera dois mockups quadrados de 1024×1024, um para cada lado da caneca.
+- O fluxo gera arte horizontal usando as dimensões do gabarito ativo; sem dimensões, usa 2400×960 px. O Quality Gate visual verifica briefing, textos exatos, elementos e cortes, podendo solicitar uma regeneração corretiva. Em seguida, são gerados dois mockups de 1024×1024, um para cada lado.
 - O Admin acompanha o andamento e mostra links privados para visualizar os resultados.
 - Cada geração cria um projeto interno com briefing, uma versão de arte e duas versões de mockup; não publica um produto automaticamente.
 
@@ -18,7 +18,7 @@ Restaurar no repositório oficial Caneca Fácil uma ferramenta interna para cria
 - O Admin envia a sessão Supabase do operador à API Hono.
 - A API valida o token com Supabase Auth e confirma a associação em `admin_membership_lookup` antes de aceitar qualquer geração ou leitura.
 - A chave OpenAI permanece no ambiente servidor; o navegador nunca recebe a chave.
-- A API usa `OPENAI_IMAGE_MODEL` (padrão `gpt-image-2.5-sunburst`) e salva os arquivos nos buckets privados existentes `artwork-master` e `mockups`.
+- A API usa `OPENAI_IMAGE_MODEL` (padrão `gpt-image-2.5-sunburst`) para gerar/editar imagens e `OPENAI_REVIEW_MODEL` (padrão `gpt-6-astra`) pela Responses API para o Quality Gate visual. Os arquivos ficam nos buckets privados `artwork-master` e `mockups`.
 - A API registra briefing, arte e mockups nas tabelas existentes `briefings`, `art_versions` e `mockup_versions`, e atualiza `mug_projects`.
 - A geração corre em segundo plano no processo da API; a interface consulta o estado do projeto pela própria API.
 - O endpoint só aceita a origem exata configurada em `ADMIN_ORIGIN`.
@@ -26,7 +26,7 @@ Restaurar no repositório oficial Caneca Fácil uma ferramenta interna para cria
 ## Estados e falhas
 
 - Os estados usados são os já existentes: `generating_art`, `generating_mockup`, `needs_review` e `failed`.
-- Falhas não removem arte já criada; o projeto permanece registrado e recebe estado `failed`.
+- Se o Quality Gate recomendar regeneração, o fluxo tenta uma única correção e preserva as versões. Se a revisão não estiver disponível, o projeto continua até os mockups e pede revisão humana. Falhas de geração não removem arte já criada; o projeto permanece registrado e recebe estado `failed`.
 - A API devolve URLs assinadas com validade limitada; nenhum bucket é tornado público.
 - A aplicação não expõe detalhes internos ou credenciais em mensagens de erro.
 
@@ -39,6 +39,7 @@ Restaurar no repositório oficial Caneca Fácil uma ferramenta interna para cria
 ## Configuração de produção
 
 - `OPENAI_API_KEY`: credencial privada do servidor.
+- `OPENAI_REVIEW_MODEL`: modelo com visão para a conferência automatizada (padrão `gpt-6-astra`).
 - `ADMIN_ORIGIN`: origem exata do Admin publicado.
 - `VITE_API_URL`: URL pública da API, sem a barra final.
 - `SUPABASE_URL` e `SUPABASE_SECRET_KEY`: credenciais privadas já usadas pela API.
@@ -47,3 +48,7 @@ Restaurar no repositório oficial Caneca Fácil uma ferramenta interna para cria
 
 - A conclusão depende de uma chave OpenAI válida e de buckets privados/tabelas existentes no projeto Supabase de Caneca Fácil.
 - A arte fica em revisão humana e não deve ser considerada pronta para impressão sem conferência do gabarito físico, da composição e dos textos. O cadastro de produto público continua fora do escopo.
+
+## Referência histórica consultada
+
+Os cenários Make antigos estão inativos e foram consultados apenas para recuperar o desenho do fluxo. O V16 gerava arte plana horizontal e dois mockups WebP; um Quality Gate separado verificava texto exato, elementos do briefing, cortes nas bordas e erros visuais. A implementação nova conserva esses controles, grava somente no Supabase do CanecaFácil e não reativa Firebase, GitHub operacional ou SUCEDOAN12.

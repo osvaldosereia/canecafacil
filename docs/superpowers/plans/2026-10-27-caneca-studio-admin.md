@@ -16,7 +16,7 @@
 - OpenAI and Supabase secret keys stay in the API environment.
 - Only `admin_membership_lookup` members can create or inspect studio jobs.
 - Art and mockups stay in private buckets and are returned as signed URLs.
-- Art follows the active template output dimensions, rounded down to model-compatible 16 px increments; without template dimensions it uses 2304×944. The two mockups are 1024×1024.
+- Art follows the active template output dimensions, rounded down to model-compatible 16 px increments; without template dimensions it uses 2400×960. The two mockups are 1024×1024. The OpenAI visual Quality Gate may trigger one corrective regeneration.
 - The generation flow creates an internal project; it does not publish a catalog product.
 
 ## Review Focus
@@ -68,4 +68,4 @@
 
 ## Verification status
 
-The implementation is committed to the `feat/admin-caneca-studio` branch in `osvaldosereia/canecafacil`. Changed files were read back for static review; no test or build command was run. Runtime activation is still pending access to the correct Caneca Fácil Supabase project and configuration of the Admin/API runtime variables.
+The implementation is committed to the `feat/admin-caneca-studio` branch in `osvaldosereia/canecafacil`. Legacy Make scenarios were inspected as design references; all remain inactive. Changed files were read back for static review; no test or build command was run. Runtime activation is still pending access to the correct Caneca Fácil Supabase project and configuration of the Admin/API runtime variables.

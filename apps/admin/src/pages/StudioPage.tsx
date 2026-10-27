@@ -3,11 +3,19 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import './StudioPage.css';
 
 interface Asset { version: number; url: string }
+interface QualityReview {
+  approved: boolean;
+  score: number;
+  blocking_issues: string[];
+  warnings: string[];
+  concise_note: string;
+}
 interface Job {
   projectId: string;
   title: string | null;
   status: string;
   art: Asset | null;
+  validation: QualityReview | null;
   mockups: Asset[];
 }
 interface StudioPageProps { client: SupabaseClient; apiUrl: string }
@@ -128,6 +136,7 @@ export function StudioPage({ client, apiUrl }: StudioPageProps) {
         title: form.get('title')?.toString() ?? null,
         status: created.status,
         art: null,
+        validation: null,
         mockups: [],
       });
       setNotice('Criação iniciada. O Estúdio atualizará os resultados automaticamente.');
@@ -147,7 +156,7 @@ export function StudioPage({ client, apiUrl }: StudioPageProps) {
         <div>
           <p className="studio-eyebrow">CRIAÇÃO ASSISTIDA</p>
           <h1>Estúdio de Canecas</h1>
-          <p>Descreva a ideia. A automação prepara a arte e dois mockups privados para revisão.</p>
+          <p>Descreva a ideia. A automação prepara a arte, executa o Quality Gate visual e cria dois mockups privados.</p>
         </div>
         <span className="studio-private">Área interna</span>
       </header>
@@ -235,6 +244,25 @@ export function StudioPage({ client, apiUrl }: StudioPageProps) {
                 <figcaption><span>Arte panorâmica · versão {job.art.version}</span>
                   <a href={job.art.url} target="_blank" rel="noreferrer" download>Abrir arte</a></figcaption>
               </figure> : null}
+              {job.validation ? (
+                <section className={'studio-quality' + (job.validation.approved ? ' is-approved' : '')} aria-label="Revisão visual da arte">
+                  <div className="studio-quality-heading">
+                    <strong>Quality Gate visual · {job.validation.score}/100</strong>
+                    <span>
+                      {job.validation.approved
+                        ? 'Verificação automática passou; revisão humana ainda pendente.'
+                        : 'A arte precisa de conferência humana.'}
+                    </span>
+                  </div>
+                  <p>{job.validation.concise_note}</p>
+                  {job.validation.blocking_issues.length ? (
+                    <ul>{job.validation.blocking_issues.map((item, index) => <li key={'issue-' + index}>{item}</li>)}</ul>
+                  ) : null}
+                  {job.validation.warnings.length ? (
+                    <ul className="studio-quality-warnings">{job.validation.warnings.map((item, index) => <li key={'warning-' + index}>{item}</li>)}</ul>
+                  ) : null}
+                </section>
+              ) : null}
               {job.mockups.length ? <div className="studio-mockups">
                 {job.mockups.map((asset, index) => <figure key={asset.version}>
                   <img src={asset.url} alt={'Mockup de caneca, vista ' + (index === 0 ? 'frontal' : 'oposta')} />
