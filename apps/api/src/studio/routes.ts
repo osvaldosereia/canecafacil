@@ -13,6 +13,7 @@ interface StudioRouteConfig {
   adminOrigin: string;
   openAiApiKey?: string;
   imageModel: string;
+  reviewModel: string;
 }
 
 class InvalidStudioInput extends Error {}
@@ -160,6 +161,7 @@ export function registerStudioRoutes(app: Hono, config: StudioRouteConfig): void
         openai,
         input,
         config.imageModel,
+        config.reviewModel,
       );
       return context.json(job, 202);
     } catch (error) {

@@ -102,6 +102,7 @@ export function createApiApp(
       adminOrigin: config.adminOrigin,
       openAiApiKey: config.openAiApiKey,
       imageModel: config.openAiImageModel ?? 'gpt-image-2.5-sunburst',
+      reviewModel: config.openAiReviewModel ?? 'gpt-6-astra',
     });
   }
 

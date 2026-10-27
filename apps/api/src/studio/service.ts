@@ -1,7 +1,7 @@
 import OpenAI, { toFile } from 'openai';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-const DEFAULT_CANVAS = { width: 2304, height: 944 };
+const DEFAULT_CANVAS = { width: 2400, height: 960 };
 const SIGNED_URL_TTL_SECONDS = 900;
 
 export interface StudioReference {
@@ -96,7 +96,7 @@ function resolveCanvas(template: Record<string, unknown> | null): CanvasSize {
   const fittedHeight = Math.floor((height * scale) / 16) * 16;
   const ratio = fittedWidth / fittedHeight;
 
-  if (fittedWidth < 256 || fittedHeight < 256 || ratio < 1 / 3 || ratio > 3) {
+  if (fittedWidth < 256 || fittedHeight < 256 || fittedWidth * fittedHeight < 655360 || ratio < 1 / 3 || ratio > 3) {
     return { ...DEFAULT_CANVAS, templateId };
   }
 
@@ -223,13 +223,11 @@ async function uploadPrivateAsset(
 
 function makeArtPrompt(input: StudioJobInput, canvas: CanvasSize): string {
   const lines = [
-    'Create flat 2D artwork for printing as a wrap on a ceramic mug.',
-    'Do not show a mug, product mockup, hands, table, or scene. The whole canvas is the artwork.',
-    'Use a very wide horizontal composition with dimensions ' +
-      canvas.width +
-      ' by ' +
-      canvas.height +
-      ' pixels. Keep essential details away from the outermost edges.',
+    'Create only the flat 2D artwork for printing as a wrap on a ceramic mug. Never draw a mug, product mockup, hands, table, or room.',
+    'Final landscape canvas: ' + canvas.width + ' x ' + canvas.height + ' pixels; physical target approximately 24 x 9.5 cm.',
+    'Let the artwork fill the usable height, with small safe margins above and below. Do not squash, stretch, or compress the main design into a low narrow band.',
+    'Keep faces, people, animals, required text, and important symbols comfortably inside the upper and lower edges. Backgrounds, patterns, and natural bleed may continue to the canvas edges.',
+    'Do not invent lettering, names, dates, or random text. Include only exact wording supplied in the briefing.',
     'Theme: ' + input.mainTheme,
   ];
 
@@ -241,7 +239,7 @@ function makeArtPrompt(input: StudioJobInput, canvas: CanvasSize): string {
   }
   if (input.mandatoryText.length) {
     lines.push(
-      'Include this exact text, preserving accents, spelling, and punctuation: ' +
+      'Required exact text, preserving accents, spelling, and punctuation: ' +
         input.mandatoryText.map((item) => '"' + item + '"').join('; '),
     );
   }
@@ -249,18 +247,17 @@ function makeArtPrompt(input: StudioJobInput, canvas: CanvasSize): string {
     lines.push('Required visual elements: ' + input.mandatoryElements.join('; '));
   }
   if (input.forbiddenElements.length) {
-    lines.push('Do not include: ' + input.forbiddenElements.join('; '));
+    lines.push('Elements to avoid: ' + input.forbiddenElements.join('; '));
   }
   if (input.compositionNotes) {
     lines.push('Composition notes: ' + input.compositionNotes);
   }
 
   lines.push(
-    'Create a polished, balanced design suitable for human review before production. Avoid watermarks and unrelated lettering.',
+    'Create a polished, balanced proposal for human review before production. Do not add watermarks or unrelated lettering.',
   );
   return lines.join('\n');
 }
-
 function makeMockupPrompt(side: 'front' | 'back', input: StudioJobInput): string {
   const sideDescription =
     side === 'front'
@@ -277,6 +274,147 @@ function makeMockupPrompt(side: 'front' | 'back', input: StudioJobInput): string
   ].join(' ');
 }
 
+export interface ArtQualityReview {
+  approved: boolean;
+  score: number;
+  blocking_issues: string[];
+  warnings: string[];
+  exact_text_ok: boolean | null;
+  brief_ok: boolean;
+  edges_ok: boolean;
+  recommendation: 'approve' | 'regenerate' | 'manual_review';
+  concise_note: string;
+}
+
+function manualReview(note: string): ArtQualityReview {
+  return {
+    approved: false,
+    score: 0,
+    blocking_issues: [],
+    warnings: ['A revisão automática não ficou disponível nesta tentativa.'],
+    exact_text_ok: null,
+    brief_ok: false,
+    edges_ok: false,
+    recommendation: 'manual_review',
+    concise_note: note,
+  };
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim().slice(0, 300))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function parseQualityReview(text: string): ArtQualityReview {
+  try {
+    const value = JSON.parse(text) as Record<string, unknown>;
+    const blockingIssues = stringList(value.blocking_issues);
+    const warnings = stringList(value.warnings);
+    const score = typeof value.score === 'number' && Number.isFinite(value.score)
+      ? Math.max(0, Math.min(100, Math.round(value.score)))
+      : 0;
+    const recommendation =
+      value.recommendation === 'approve' ||
+      value.recommendation === 'regenerate' ||
+      value.recommendation === 'manual_review'
+        ? value.recommendation
+        : 'manual_review';
+    const exactTextOk =
+      typeof value.exact_text_ok === 'boolean' ? value.exact_text_ok : null;
+    const briefOk = value.brief_ok === true;
+    const edgesOk = value.edges_ok === true;
+    const approved =
+      value.approved === true &&
+      blockingIssues.length === 0 &&
+      exactTextOk !== false &&
+      briefOk &&
+      edgesOk;
+
+    return {
+      approved,
+      score,
+      blocking_issues: blockingIssues,
+      warnings,
+      exact_text_ok: exactTextOk,
+      brief_ok: briefOk,
+      edges_ok: edgesOk,
+      recommendation: approved ? 'approve' : recommendation,
+      concise_note:
+        typeof value.concise_note === 'string'
+          ? value.concise_note.trim().slice(0, 500)
+          : 'Confira a arte manualmente antes de produzir.',
+    };
+  } catch {
+    return manualReview('A revisão automática não retornou um resultado legível. Confira a arte manualmente.');
+  }
+}
+
+async function reviewArtwork(
+  openai: OpenAI,
+  reviewModel: string,
+  bytes: Uint8Array,
+  input: StudioJobInput,
+  project: CreatedProject,
+): Promise<ArtQualityReview> {
+  const reviewerPrompt = [
+    'Você é o Quality Gate visual da CanecaFácil.',
+    'Analise a arte gerada antes de mostrá-la à equipe. Seja rigoroso com erros objetivos, mas não reprove por preferência estética subjetiva.',
+    'Compare a imagem com o briefing e com os textos exatos exigidos. Verifique: texto/nome exato quando exigido; presença dos elementos essenciais; cortes problemáticos nas laterais; composição utilizável como arte horizontal de caneca; erros visuais evidentes; aderência ao estilo e à paleta.',
+    'Não invente detalhes sobre a imagem. Se não conseguir verificar algo, marque como incerto e recomende revisão manual.',
+    'Aprovação automática só quando brief_ok e edges_ok forem true, exact_text_ok não for false, e não houver blocking_issues.',
+    'Retorne apenas JSON válido com: approved (boolean), score (0-100), blocking_issues (array), warnings (array), exact_text_ok (boolean|null), brief_ok (boolean), edges_ok (boolean), recommendation (approve|regenerate|manual_review), concise_note (string).',
+  ].join(' ');
+
+  const expectedBrief = {
+    title: input.title,
+    occasion: input.occasion,
+    recipient: input.recipient,
+    theme: input.mainTheme,
+    style: input.desiredStyle,
+    colors: input.colorPreferences,
+    exact_text: input.mandatoryText,
+    required_elements: input.mandatoryElements,
+    forbidden_elements: input.forbiddenElements,
+    composition_notes: input.compositionNotes,
+    canvas: project.canvas.width + 'x' + project.canvas.height,
+    reference_image_supplied: Boolean(input.reference),
+  };
+
+  try {
+    const response = await openai.responses.create({
+      model: reviewModel,
+      store: false,
+      max_output_tokens: 1200,
+      text: { format: { type: 'json_object' } },
+      input: [
+        { role: 'developer', content: reviewerPrompt },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: 'BRIEFING ESPERADO (JSON):\n' + JSON.stringify(expectedBrief) +
+                '\n\nA imagem anexada é a arte final a revisar.',
+            },
+            {
+              type: 'input_image',
+              image_url: 'data:image/webp;base64,' + Buffer.from(bytes).toString('base64'),
+              detail: 'high',
+            },
+          ],
+        },
+      ],
+    });
+    return parseQualityReview(response.output_text ?? '');
+  } catch {
+    return manualReview('Não foi possível concluir a revisão automática. Confira a arte manualmente.');
+  }
+}
+
 async function imageBytesFromResponse(
   result: { data?: Array<{ b64_json?: string | null }> | null },
 ): Promise<Uint8Array> {
@@ -285,48 +423,62 @@ async function imageBytesFromResponse(
   return new Uint8Array(Buffer.from(encoded, 'base64'));
 }
 
-async function saveGeneratedArt(
-  client: SupabaseClient,
+async function generateArtworkBytes(
   openai: OpenAI,
-  project: CreatedProject,
-  input: StudioJobInput,
   model: string,
-): Promise<{ artVersionId: string; artBytes: Uint8Array }> {
-  const prompt = makeArtPrompt(input, project.canvas);
-  const size = project.canvas.width + 'x' + project.canvas.height;
-  const result = input.reference
+  input: StudioJobInput,
+  canvas: CanvasSize,
+  prompt: string,
+  baseImage?: StudioReference,
+): Promise<Uint8Array> {
+  const size = canvas.width + 'x' + canvas.height;
+  const imageInput = baseImage ?? input.reference;
+  const result = imageInput
     ? await openai.images.edit({
         model,
-        image: await toFile(Buffer.from(input.reference.bytes), input.reference.fileName, {
-          type: input.reference.mimeType,
+        image: await toFile(Buffer.from(imageInput.bytes), imageInput.fileName, {
+          type: imageInput.mimeType,
         }),
         prompt,
         size,
-        quality: 'high',
-        output_format: 'png',
+        quality: 'medium',
+        output_format: 'webp',
         background: 'opaque',
       })
     : await openai.images.generate({
         model,
         prompt,
         size,
-        quality: 'high',
-        output_format: 'png',
+        quality: 'medium',
+        output_format: 'webp',
         background: 'opaque',
         n: 1,
       });
+  return imageBytesFromResponse(result);
+}
 
-  const bytes = await imageBytesFromResponse(result);
-  const path = project.projectId + '/art-v1.png';
-  await uploadPrivateAsset(client, 'artwork-master', path, bytes, 'image/png');
+async function saveArtVersion(
+  client: SupabaseClient,
+  project: CreatedProject,
+  briefingId: string,
+  model: string,
+  version: number,
+  parentVersionId: string | null,
+  bytes: Uint8Array,
+  prompt: string,
+  review: ArtQualityReview,
+): Promise<string> {
+  const path = project.projectId + '/art-v' + version + '.webp';
+  await uploadPrivateAsset(client, 'artwork-master', path, bytes, 'image/webp');
 
   const inserted = await client
     .from('art_versions')
     .insert({
       project_id: project.projectId,
-      briefing_id: project.briefingId,
-      version: 1,
-      generation_type: 'initial',
+      briefing_id: briefingId,
+      version,
+      parent_version_id: parentVersionId,
+      generation_type: version === 1 ? 'initial' : 'regeneration',
       prompt_used: prompt,
       model,
       storage_bucket: 'artwork-master',
@@ -335,7 +487,8 @@ async function saveGeneratedArt(
       height: project.canvas.height,
       aspect_ratio: Number((project.canvas.width / project.canvas.height).toFixed(4)),
       generation_status: 'completed',
-      quality_status: 'needs_review',
+      quality_status: review.approved ? 'approved' : 'needs_review',
+      validation_result: review,
     })
     .select('id')
     .single();
@@ -346,15 +499,91 @@ async function saveGeneratedArt(
   const update = await client
     .from('mug_projects')
     .update({
+      current_art_version_id: artVersionId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', project.projectId);
+  ensureSuccess(update.error, 'studio_art_record_failed');
+  return artVersionId;
+}
+
+async function saveGeneratedArt(
+  client: SupabaseClient,
+  openai: OpenAI,
+  project: CreatedProject,
+  input: StudioJobInput,
+  imageModel: string,
+  reviewModel: string,
+): Promise<{ artVersionId: string; artBytes: Uint8Array; validation: ArtQualityReview }> {
+  const originalPrompt = makeArtPrompt(input, project.canvas);
+  let prompt = originalPrompt;
+  let bytes = await generateArtworkBytes(
+    openai,
+    imageModel,
+    input,
+    project.canvas,
+    prompt,
+  );
+  let validation = await reviewArtwork(openai, reviewModel, bytes, input, project);
+  let artVersionId = await saveArtVersion(
+    client,
+    project,
+    project.briefingId,
+    imageModel,
+    1,
+    null,
+    bytes,
+    prompt,
+    validation,
+  );
+
+  if (!validation.approved && validation.recommendation === 'regenerate') {
+    const corrections = validation.blocking_issues.length
+      ? validation.blocking_issues.join('; ')
+      : validation.concise_note;
+    prompt =
+      originalPrompt +
+      '\n\nCORREÇÕES DO QUALITY GATE: corrija estes pontos objetivos sem alterar os demais requisitos: ' +
+      corrections;
+    const previousArt: StudioReference = {
+      bytes,
+      fileName: 'caneca-facil-arte-v1.webp',
+      mimeType: 'image/webp',
+    };
+    bytes = await generateArtworkBytes(
+      openai,
+      imageModel,
+      input,
+      project.canvas,
+      prompt,
+      previousArt,
+    );
+    validation = await reviewArtwork(openai, reviewModel, bytes, input, project);
+    artVersionId = await saveArtVersion(
+      client,
+      project,
+      project.briefingId,
+      imageModel,
+      2,
+      artVersionId,
+      bytes,
+      prompt,
+      validation,
+    );
+  }
+
+  const update = await client
+    .from('mug_projects')
+    .update({
       status: 'generating_mockup',
       current_art_version_id: artVersionId,
       updated_at: new Date().toISOString(),
     })
     .eq('id', project.projectId);
   ensureSuccess(update.error, 'studio_art_record_failed');
-  return { artVersionId, artBytes: bytes };
-}
 
+  return { artVersionId, artBytes: bytes, validation };
+}
 async function saveMockup(
   client: SupabaseClient,
   openai: OpenAI,
@@ -369,12 +598,12 @@ async function saveMockup(
   const prompt = makeMockupPrompt(side, input);
   const result = await openai.images.edit({
     model,
-    image: await toFile(Buffer.from(artBytes), 'caneca-facil-arte.png', {
-      type: 'image/png',
+    image: await toFile(Buffer.from(artBytes), 'caneca-facil-arte.webp', {
+      type: 'image/webp',
     }),
     prompt,
     size: '1024x1024',
-    quality: 'high',
+    quality: 'medium',
     output_format: 'webp',
     background: 'opaque',
   });
@@ -417,7 +646,8 @@ async function runGeneration(
   openai: OpenAI,
   project: CreatedProject,
   input: StudioJobInput,
-  model: string,
+  imageModel: string,
+  reviewModel: string,
 ): Promise<void> {
   try {
     const { artVersionId, artBytes } = await saveGeneratedArt(
@@ -425,10 +655,11 @@ async function runGeneration(
       openai,
       project,
       input,
-      model,
+      imageModel,
+      reviewModel,
     );
-    await saveMockup(client, openai, project, input, artVersionId, model, 1, 'front', artBytes);
-    await saveMockup(client, openai, project, input, artVersionId, model, 2, 'back', artBytes);
+    await saveMockup(client, openai, project, input, artVersionId, imageModel, 1, 'front', artBytes);
+    await saveMockup(client, openai, project, input, artVersionId, imageModel, 2, 'back', artBytes);
 
     const update = await client
       .from('mug_projects')
@@ -443,12 +674,12 @@ async function runGeneration(
       .eq('id', project.projectId);
   }
 }
-
 export async function startStudioJob(
   client: SupabaseClient,
   openai: OpenAI,
   input: StudioJobInput,
-  model: string,
+  imageModel: string,
+  reviewModel: string,
 ): Promise<{ projectId: string; status: string }> {
   if (input.reference) validateReference(input.reference);
   const canvas = await getCanvas(client);
@@ -486,7 +717,7 @@ export async function startStudioJob(
     }
   }
 
-  void runGeneration(client, openai, project, input, model).catch((error) => {
+  void runGeneration(client, openai, project, input, imageModel, reviewModel).catch((error) => {
     console.error('[caneca-studio] unexpected background failure', error);
   });
   return { projectId: project.projectId, status: 'generating_art' };
@@ -497,6 +728,7 @@ export interface StudioJobSnapshot {
   title: string | null;
   status: string;
   art: { version: number; url: string } | null;
+  validation: ArtQualityReview | null;
   mockups: Array<{ version: number; url: string }>;
 }
 
@@ -516,15 +748,16 @@ export async function getStudioJobSnapshot(
   if (!project) return null;
 
   let art: StudioJobSnapshot['art'] = null;
+  let validation: ArtQualityReview | null = null;
   if (project.current_art_version_id) {
     const artResult = await client
       .from('art_versions')
-      .select('version,storage_bucket,storage_path')
+      .select('version,storage_bucket,storage_path,validation_result')
       .eq('id', project.current_art_version_id)
       .maybeSingle();
     ensureSuccess(artResult.error, 'studio_job_lookup_failed');
     const row = artResult.data as
-      | { version: number; storage_bucket: string; storage_path: string }
+      | { version: number; storage_bucket: string; storage_path: string; validation_result: unknown }
       | null;
     if (row) {
       const signed = await client.storage
@@ -532,6 +765,9 @@ export async function getStudioJobSnapshot(
         .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS);
       if (!signed.error && signed.data?.signedUrl) {
         art = { version: row.version, url: signed.data.signedUrl };
+      }
+      if (row.validation_result && typeof row.validation_result === 'object') {
+        validation = row.validation_result as ArtQualityReview;
       }
     }
   }
@@ -564,6 +800,7 @@ export async function getStudioJobSnapshot(
     title: project.title,
     status: project.status,
     art,
+    validation,
     mockups,
   };
 }

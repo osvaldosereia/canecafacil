@@ -9,6 +9,7 @@ export interface ApiConfig {
   adminOrigin?: string;
   openAiApiKey?: string;
   openAiImageModel?: string;
+  openAiReviewModel?: string;
 }
 
 type ApiEnvironment = Record<string, string | undefined>;
@@ -65,6 +66,7 @@ export function loadApiConfig(env: ApiEnvironment): ApiConfig {
   const adminOrigin = optionalValue(env, 'ADMIN_ORIGIN');
   const openAiApiKey = optionalValue(env, 'OPENAI_API_KEY');
   const openAiImageModel = optionalValue(env, 'OPENAI_IMAGE_MODEL');
+  const openAiReviewModel = optionalValue(env, 'OPENAI_REVIEW_MODEL');
 
   return {
     supabaseUrl: requireValue(env, 'SUPABASE_URL'),
@@ -77,5 +79,6 @@ export function loadApiConfig(env: ApiEnvironment): ApiConfig {
     ...(adminOrigin ? { adminOrigin } : {}),
     ...(openAiApiKey ? { openAiApiKey } : {}),
     ...(openAiImageModel ? { openAiImageModel } : {}),
+    ...(openAiReviewModel ? { openAiReviewModel } : {}),
   };
 }
