@@ -160,7 +160,16 @@ function serviceClients() {
   return { url, authClient, adminClient };
 }
 
-async function authorize(request: Request): Promise<{ user: { id: string; email?: string }; adminClient: ReturnType<typeof createClient>; url: string } | Response> {
+async function resolveOpenAiKey(adminClient: ReturnType<typeof createClient>): Promise<string> {
+  const { data, error } = await adminClient.rpc("get_conversation_worker_provider_secret_v1");
+  if (error) {
+    console.error("[caneca-studio] existing OpenAI provider secret lookup failed");
+    return "";
+  }
+  return typeof data === "string" ? data.trim() : "";
+}
+
+async function authorize(request: Request): Promise<{ user: { id: string }; adminClient: ReturnType<typeof createClient>; url: string } | Response> {
   const token = request.headers.get("Authorization")?.replace(/^Bearer\s+/i, "").trim();
   if (!token) return json({ error: "admin_auth_required" }, 401);
 
@@ -173,13 +182,17 @@ async function authorize(request: Request): Promise<{ user: { id: string; email?
   const { data, error } = await clients.authClient.auth.getUser(token);
   if (error || !data.user) return json({ error: "admin_auth_required" }, 401);
 
-  const configured = Deno.env.get("STUDIO_ADMIN_EMAILS")?.trim() || "";
-  if (!configured) return json({ error: "admin_access_unavailable" }, 503);
-  const allowed = configured.split(/[,;\n]/).map((item) => item.trim().toLowerCase()).filter(Boolean);
-  const email = data.user.email?.trim().toLowerCase() || "";
-  if (!email || !allowed.includes(email)) return json({ error: "admin_access_required" }, 403);
+  const { data: admin, error: adminError } = await clients.adminClient
+    .from("admin_users")
+    .select("role,is_active")
+    .eq("user_id", data.user.id)
+    .maybeSingle();
+  if (adminError) return json({ error: "admin_access_unavailable" }, 503);
+  if (admin?.is_active !== true || admin.role !== "owner") {
+    return json({ error: "admin_access_required" }, 403);
+  }
 
-  return { user: { id: data.user.id, email: data.user.email || undefined }, adminClient: clients.adminClient, url: clients.url };
+  return { user: { id: data.user.id }, adminClient: clients.adminClient, url: clients.url };
 }
 
 function safeExtension(mimeType: string): string {
@@ -721,9 +734,6 @@ async function handleRequest(request: Request): Promise<Response> {
     return json({ job: snapshot });
   }
 
-  const apiKey = Deno.env.get("OPENAI_API_KEY")?.trim() || "";
-  if (!apiKey) return json({ error: "studio_not_configured" }, 503);
-
   if (action === "start") {
     if (!form) return json({ error: "invalid_studio_input" }, 400);
     try {
@@ -739,6 +749,8 @@ async function handleRequest(request: Request): Promise<Response> {
 
   if (action === "advance") {
     if (typeof body.jobId !== "string") return json({ error: "studio_job_not_found" }, 404);
+    const apiKey = await resolveOpenAiKey(adminClient);
+    if (!apiKey) return json({ error: "openai_provider_secret_unavailable" }, 503);
     return await advanceJob(adminClient, url, user.id, body.jobId, apiKey);
   }
 
