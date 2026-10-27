@@ -20,4 +20,4 @@ O workflow **Deploy Caneca Fácil Studio** compila `apps/admin` no modo Pages e 
 
 `https://osvaldosereia.github.io/canecafacil/`
 
-A origem de Pages deve permanecer **GitHub Actions**. As migrações e a função ficam versionadas em `supabase/`; não é necessário criar outro projeto. Gerações consomem a conta OpenAI já conectada e o armazenamento do projeto atual.
+A origem de Pages deve permanecer **GitHub Actions**. Esse workflow publica somente o site; as migrações e a função ficam versionadas em `supabase/` e são aplicadas separadamente ao projeto existente. Nesta ativação, a migration `20261027214301_caneca_studio_guest_access_v1` e a versão 2 da função já foram aplicadas. Não é necessário criar outro projeto. Gerações consomem a conta OpenAI já conectada e o armazenamento do projeto atual.
