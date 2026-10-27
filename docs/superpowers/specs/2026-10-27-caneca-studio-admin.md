@@ -19,7 +19,7 @@ Disponibilizar o Estúdio de Canecas da Caneca Fácil no GitHub, usando um proje
 - O front-end React/Vite é publicado pelo GitHub Pages em `https://osvaldosereia.github.io/canecafacil/`.
 - O front usa apenas a URL do projeto Supabase, a chave publishable e uma sessão Auth; a chave da OpenAI nunca vai ao navegador.
 - A função Supabase `caneca-studio` verifica o JWT, valida o e-mail contra `STUDIO_ADMIN_EMAILS`, controla cada etapa e chama OpenAI Images/Responses.
-- O destino é o projeto existente Dona Antônia Staging (`crkssjkmdjkohadhcsnb`), escolhido por estar vazio. A migração cria somente `caneca_studio_jobs` e o bucket privado `caneca-studio-assets`; RLS e privilégios negam acesso direto do navegador.
+- O destino é o projeto existente Dona Antônia Staging (`crkssjkmdjkohadhcsnb`), escolhido por estar vazio. A migração cria somente `caneca_studio_jobs` e o bucket privado `caneca-studio-assets`; Uma policy RLS explícita permite somente service_role; anon/authenticated não têm acesso direto.
 - A chave secreta OpenAI fica em `OPENAI_API_KEY` nos secrets do Supabase. Os modelos padrão são `gpt-image-2.5-sunburst` para imagem e `gpt-6-astra` para revisão.
 
 ## Segurança e custos

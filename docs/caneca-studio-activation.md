@@ -6,7 +6,7 @@ O código fica no repositório GitHub `osvaldosereia/canecafacil`. A edição do
 
 Usar o projeto existente **Dona Antônia Staging** (`crkssjkmdjkohadhcsnb`). Ele foi conferido antes da instalação: estava ativo, sem tabelas de produto, sem migrações próprias, sem buckets e sem Edge Functions. Nenhum projeto novo foi criado e os projetos de produção não foram alterados.
 
-A migração adiciona apenas `public.caneca_studio_jobs` com RLS sem acesso direto para anon/authenticated e o bucket privado `caneca-studio-assets`. A Edge Function `caneca-studio` valida a sessão Supabase e compara o e-mail com `STUDIO_ADMIN_EMAILS`.
+A migração adiciona apenas `public.caneca_studio_jobs` com RLS e policy explícita para o papel interno service_role, sem acesso direto para anon/authenticated, e o bucket privado `caneca-studio-assets`. A Edge Function `caneca-studio` valida a sessão Supabase e compara o e-mail com `STUDIO_ADMIN_EMAILS`.
 
 ## O que falta configurar no painel
 

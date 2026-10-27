@@ -18,8 +18,8 @@ Publicar a interface interna do Estúdio no GitHub Pages e mover o processamento
 - [x] Preparar interface que publica apenas o Estúdio, sem carregar tabelas legadas de produção.
 - [x] Preparar workflow de publicação GitHub Pages e base path do repositório.
 - [x] Preparar migração isolada e Edge Function com geração e revisão visual.
-- [ ] Aplicar migração e publicar função no projeto staging.
-- [ ] Ativar Pages nas configurações do repositório.
+- [x] Aplicar migrações e publicar função no projeto staging.
+- [ ] Ativar Pages nas configurações do repositório (ação manual do proprietário).
 - [ ] Inserir segredo OpenAI, allowlist de e-mails e usuário Auth no Supabase.
 - [ ] Confirmar a primeira publicação e gerar a primeira amostra.
 
