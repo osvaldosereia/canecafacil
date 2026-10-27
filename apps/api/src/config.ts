@@ -6,6 +6,10 @@ export interface ApiConfig {
   sessionCookieName: string;
   sessionTtlDays: number;
   port: number;
+  adminOrigin?: string;
+  openAiApiKey?: string;
+  openAiImageModel?: string;
+  openAiReviewModel?: string;
 }
 
 type ApiEnvironment = Record<string, string | undefined>;
@@ -59,6 +63,11 @@ function parseSessionTtlDays(value: string | undefined): number {
 }
 
 export function loadApiConfig(env: ApiEnvironment): ApiConfig {
+  const adminOrigin = optionalValue(env, 'ADMIN_ORIGIN');
+  const openAiApiKey = optionalValue(env, 'OPENAI_API_KEY');
+  const openAiImageModel = optionalValue(env, 'OPENAI_IMAGE_MODEL');
+  const openAiReviewModel = optionalValue(env, 'OPENAI_REVIEW_MODEL');
+
   return {
     supabaseUrl: requireValue(env, 'SUPABASE_URL'),
     supabaseSecretKey: requireValue(env, 'SUPABASE_SECRET_KEY'),
@@ -67,5 +76,9 @@ export function loadApiConfig(env: ApiEnvironment): ApiConfig {
     sessionCookieName: optionalValue(env, 'SESSION_COOKIE_NAME') ?? 'cf_session',
     sessionTtlDays: parseSessionTtlDays(env.SESSION_TTL_DAYS),
     port: parsePort(env.PORT),
+    ...(adminOrigin ? { adminOrigin } : {}),
+    ...(openAiApiKey ? { openAiApiKey } : {}),
+    ...(openAiImageModel ? { openAiImageModel } : {}),
+    ...(openAiReviewModel ? { openAiReviewModel } : {}),
   };
 }

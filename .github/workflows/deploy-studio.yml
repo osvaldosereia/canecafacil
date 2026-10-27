@@ -1,0 +1,59 @@
+name: Deploy Caneca Fácil Studio
+
+on:
+  push:
+    branches:
+      - main
+      - feat/admin-caneca-studio
+    paths:
+      - '.github/workflows/deploy-studio.yml'
+      - 'apps/admin/**'
+      - 'packages/core/**'
+      - 'supabase/functions/caneca-studio/**'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    env:
+      VITE_SUPABASE_URL: https://ssbesxgaijknwsjbsbcz.supabase.co
+      VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_tFXHtH0HCXZepVtwgKElIg_DxS76Gu8
+      VITE_STUDIO_ONLY: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      # Pages must be configured to use GitHub Actions in repository settings.
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Build Admin Studio
+        run: |
+          npm run build:core
+          npm run build --workspace @caneca-facil/admin -- --mode pages
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/admin/dist
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

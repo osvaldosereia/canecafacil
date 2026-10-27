@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { StudioPage } from './pages/StudioPage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ProjectDetail, type ProjectDetailData } from './components/ProjectDetail';
 import {
@@ -16,7 +17,7 @@ import {
 import { createSupabaseProjectDataPort } from './services/supabase-projects';
 import type { ProjectListItem } from './components/ProjectList';
 
-export type AdminSection = 'projects' | 'template';
+export type AdminSection = 'projects' | 'template' | 'studio';
 
 export interface AdminWorkspaceViewProps {
   activeSection: AdminSection;
@@ -27,6 +28,7 @@ export interface AdminWorkspaceViewProps {
   loading: boolean;
   error: string | null;
   templateMessage: string | null;
+  studioContent?: ReactNode;
   onNavigate(section: AdminSection): void;
   onSelectProject(projectId: string): void;
   onSaveTemplate(template: MugTemplateSettings): void | Promise<void>;
@@ -42,6 +44,7 @@ export function AdminWorkspaceView({
   loading,
   error,
   templateMessage,
+  studioContent,
   onNavigate,
   onSelectProject,
   onSaveTemplate,
@@ -69,6 +72,13 @@ export function AdminWorkspaceView({
           >
             Gabarito
           </button>
+          <button
+            type="button"
+            aria-current={activeSection === 'studio' ? 'page' : undefined}
+            onClick={() => onNavigate('studio')}
+          >
+            Estúdio
+          </button>
           <button type="button" onClick={() => void onSignOut()}>
             Sair
           </button>
@@ -93,7 +103,7 @@ export function AdminWorkspaceView({
             )}
           </aside>
         </div>
-      ) : (
+      ) : activeSection === 'template' ? (
         <main className="admin-page admin-page--template">
           {template ? (
             <>
@@ -109,6 +119,8 @@ export function AdminWorkspaceView({
             <p className="empty-state">Nenhum gabarito ativo disponível.</p>
           )}
         </main>
+      ) : (
+        <main className="admin-page admin-page--studio">{studioContent}</main>
       )}
     </div>
   );
@@ -222,6 +234,7 @@ export function AdminWorkspace({ client }: AdminWorkspaceProps) {
       loading={loading}
       error={error}
       templateMessage={templateMessage}
+      studioContent={<StudioPage client={client} />}
       onNavigate={handleNavigate}
       onSelectProject={handleSelectProject}
       onSaveTemplate={handleSaveTemplate}
