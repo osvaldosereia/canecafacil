@@ -30,8 +30,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     env:
-      VITE_SUPABASE_URL: https://crkssjkmdjkohadhcsnb.supabase.co
-      VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_5l67oBiOlOwuqDRuVwhiFQ_gwsMg49l
+      VITE_SUPABASE_URL: https://ssbesxgaijknwsjbsbcz.supabase.co
+      VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_tFXHtH0HCXZepVtwgKElIg_DxS76Gu8
       VITE_STUDIO_ONLY: 'true'
     steps:
       - name: Checkout
