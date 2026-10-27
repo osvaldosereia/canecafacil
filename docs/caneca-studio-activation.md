@@ -1,19 +1,19 @@
 # Ativação do Estúdio de Canecas
 
-O código fica no repositório GitHub `osvaldosereia/canecafacil`. A edição do Estúdio usa GitHub Pages para o site e uma Supabase Edge Function para proteger a chave da OpenAI e gravar imagens privadas.
+O código fica no repositório GitHub `osvaldosereia/canecafacil`. O front-end é publicado como site estático no GitHub Pages; a geração e o armazenamento das imagens ficam em uma Supabase Edge Function.
 
-## Destino Supabase
+## Projeto Supabase reutilizado
 
-Usar o projeto existente **Dona Antônia Staging** (`crkssjkmdjkohadhcsnb`). Ele foi conferido antes da instalação: estava ativo, sem tabelas de produto, sem migrações próprias, sem buckets e sem Edge Functions. Nenhum projeto novo foi criado e os projetos de produção não foram alterados.
+O Estúdio usa o projeto já existente **Dona Antônia** (`ssbesxgaijknwsjbsbcz`). A integração OpenAI já está configurada no Vault desse projeto sob o nome `openai_conversation_worker_key_v1`. A função `caneca-studio` resolve a chave usando a RPC existente `get_conversation_worker_provider_secret_v1`, executada apenas com o papel interno `service_role`; essa RPC valida que a credencial esteja ativa. A chave não é copiada para o repositório nem enviada ao navegador.
 
-A migração adiciona apenas `public.caneca_studio_jobs` com RLS e policy explícita para o papel interno service_role, sem acesso direto para anon/authenticated, e o bucket privado `caneca-studio-assets`. A Edge Function `caneca-studio` valida a sessão Supabase e compara o e-mail com `STUDIO_ADMIN_EMAILS`.
+O acesso usa a sessão Auth existente e valida que o usuário conste como ativo com papel `owner` na tabela `public.admin_users`. Não é preciso cadastrar outra chave, allowlist nem usuário.
 
-## O que falta configurar no painel
+A instalação acrescenta somente a tabela privada `public.caneca_studio_jobs`, uma policy restrita a `service_role`, o bucket privado `caneca-studio-assets` e a Edge Function `caneca-studio`. Nenhuma tabela, dado, função ou tela do site/administrador existentes é alterada.
 
-1. No Supabase, abra **Edge Functions → Secrets** e cadastre `OPENAI_API_KEY` e `STUDIO_ADMIN_EMAILS`. Para a segunda variável, use os e-mails autorizados separados por vírgula. Não coloque a chave OpenAI no GitHub nem no navegador.
-2. Em **Authentication → Users**, crie ou convide o usuário com e-mail e senha que entrará no Estúdio. Esse e-mail precisa estar em `STUDIO_ADMIN_EMAILS`.
-3. No GitHub, abra **Settings → Pages** e escolha **GitHub Actions** como fonte de publicação. O workflow do repositório constrói o Estúdio e o publica em `https://osvaldosereia.github.io/canecafacil/`.
+## Publicação
 
-A conexão GitHub disponível permite editar o repositório, mas não a configuração administrativa de Pages. Por isso, o primeiro passo de Pages depende do dono do repositório. Depois de habilitar, abra **Actions → Deploy Caneca Fácil Studio** e execute novamente se a primeira publicação já tiver falhado.
+No GitHub, abra **Settings → Pages** e escolha **GitHub Actions** como fonte de publicação. Depois, o workflow **Deploy Caneca Fácil Studio** publica em `https://osvaldosereia.github.io/canecafacil/`. Se uma execução anterior já falhou antes dessa configuração, execute novamente a execução em **Actions**.
 
-Cada geração pode fazer até quatro chamadas de imagem (arte inicial, no máximo uma correção e dois mockups), além da revisão visual. Reutilizar o projeto Supabase evita criar outro projeto, mas chamadas OpenAI e uso de armazenamento/tráfego podem gerar consumo conforme os planos existentes.
+## Geração e consumo
+
+Cada briefing gera uma arte horizontal, faz uma revisão visual, permite no máximo uma correção e cria dois mockups da caneca. A geração usa a conta OpenAI já conectada ao projeto e pode consumir chamadas de API, armazenamento e tráfego, conforme os planos existentes. Nenhum projeto Supabase novo é criado.
