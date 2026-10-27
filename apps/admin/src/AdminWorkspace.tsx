@@ -234,7 +234,7 @@ export function AdminWorkspace({ client }: AdminWorkspaceProps) {
       loading={loading}
       error={error}
       templateMessage={templateMessage}
-      studioContent={<StudioPage client={client} apiUrl={import.meta.env.VITE_API_URL ?? ''} />}
+      studioContent={<StudioPage client={client} />}
       onNavigate={handleNavigate}
       onSelectProject={handleSelectProject}
       onSaveTemplate={handleSaveTemplate}

@@ -1,71 +1,35 @@
-# Caneca Studio Admin Implementation Plan
+# Caneca Studio — ativação no GitHub
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+## Objetivo
 
-**Goal:** Add an internal AI Studio to the official Caneca Fácil Admin that creates a horizontal mug artwork and two private mockups.
+Publicar a interface interna do Estúdio no GitHub Pages e mover o processamento para uma Supabase Edge Function no projeto Supabase existente Dona Antônia Staging.
 
-**Architecture:** The Admin uses its existing Supabase session to call a Hono API. The API validates the user and the server-side admin membership, uses OpenAI for the image pipeline, and saves immutable assets and project metadata to the existing private Supabase buckets and tables.
+## Arquitetura
 
-**Tech Stack:** React, TypeScript, Hono, Supabase Auth/Postgres/Storage, OpenAI Images API.
+- Site: GitHub Pages, build estático de `apps/admin` no modo `pages`.
+- Autenticação: Supabase Auth; só e-mails em `STUDIO_ADMIN_EMAILS` podem chamar a função.
+- Geração: Supabase Edge Function `caneca-studio`, OpenAI Images API para arte/mockups e Responses API para Quality Gate.
+- Dados: tabela própria `public.caneca_studio_jobs`; bucket privado `caneca-studio-assets`; RLS bloqueia leitura direta do front-end.
+- Execução: uma etapa por chamada para a função, com retomada do estado salvo; no máximo uma regeneração corretiva.
 
-**Spec:** `docs/superpowers/specs/2026-10-27-caneca-studio-admin.md`
+## Tarefas
 
-## Global Constraints
+- [x] Escolher Dona Antônia Staging depois de confirmar que estava vazio e saudável.
+- [x] Preparar interface que publica apenas o Estúdio, sem carregar tabelas legadas de produção.
+- [x] Preparar workflow de publicação GitHub Pages e base path do repositório.
+- [x] Preparar migração isolada e Edge Function com geração e revisão visual.
+- [ ] Aplicar migração e publicar função no projeto staging.
+- [ ] Ativar Pages nas configurações do repositório.
+- [ ] Inserir segredo OpenAI, allowlist de e-mails e usuário Auth no Supabase.
+- [ ] Confirmar a primeira publicação e gerar a primeira amostra.
 
-- No Make webhook, Firebase database, or SUCEDOAN12 branch may be used by the restored feature.
-- OpenAI and Supabase secret keys stay in the API environment.
-- Only `admin_membership_lookup` members can create or inspect studio jobs.
-- Art and mockups stay in private buckets and are returned as signed URLs.
-- Art follows the active template output dimensions, rounded down to model-compatible 16 px increments; without template dimensions it uses 2400×960. The two mockups are 1024×1024. The OpenAI visual Quality Gate may trigger one corrective regeneration.
-- The generation flow creates an internal project; it does not publish a catalog product.
+## Limites
 
-## Review Focus
+- Nenhuma chave OpenAI ou chave Supabase privilegiada é gravada no repositório.
+- Não reativar automações legadas no Make, Firebase, ou SUCEDOAN12.
+- GitHub Pages deve ser habilitado pelo proprietário do repositório; a conexão usada para o trabalho não pode mudar essa configuração.
+- Não rodar testes/build local nesta etapa. A publicação GitHub Actions só constrói o front-end.
 
-- Missing OpenAI configuration returns a clear setup error without sending a provider request.
-- An authenticated but non-admin user receives 403 for both create and poll endpoints.
-- Invalid MIME types and references over 8 MB are rejected before upload or image generation.
-- Partial generation failures leave the project in `failed` without exposing provider secrets.
-- Browsers only receive time-limited signed URLs for private files.
+## Modelo
 
----
-
-### Task 1: API generation workflow
-
-**Files:**
-- Create `apps/api/src/studio/service.ts` and `apps/api/src/studio/routes.ts`.
-- Modify `apps/api/src/app.ts` and `apps/api/src/config.ts`.
-- Modify `apps/api/.env.example` and root `.env.example`.
-
-**Produces:** Admin-only create/poll routes, asynchronous job state in `mug_projects`, OpenAI artwork and mockup generation, and versioned Supabase records.
-
-- [x] Validate bearer token with Supabase Auth and require a matching row in `admin_membership_lookup`.
-- [x] Validate request fields and optional image bytes before creating a project.
-- [x] Persist a closed internal conversation, project, and ready briefing.
-- [x] Generate one print artwork and two mockups through the backend OpenAI client.
-- [x] Save to the existing private storage buckets and create immutable version rows.
-- [x] Return signed result URLs through an admin-authenticated poll route.
-
-### Task 2: Admin Studio interface
-
-**Files:**
-- Create `apps/admin/src/pages/StudioPage.tsx` and `apps/admin/src/pages/StudioPage.css`.
-- Modify `apps/admin/src/AdminWorkspace.tsx` and `apps/admin/.env.example`.
-
-**Produces:** Mobile-friendly Admin navigation, generation form, progress state, and result links.
-
-- [x] Add an Estúdio section that uses the existing signed-in Supabase client.
-- [x] Submit text fields and an optional image without exposing credentials.
-- [x] Poll job state until `needs_review` or `failed` and render the art plus both mockups.
-
-### Task 3: Configuration and delivery notes
-
-**Files:**
-- Update the API and Admin environment examples.
-- Keep the design and implementation decisions in this spec and plan.
-
-- [x] Document `OPENAI_API_KEY`, exact `ADMIN_ORIGIN`, and `VITE_API_URL` requirements.
-- [x] Review the changed files and confirm the legacy Make scenario remains inactive.
-
-## Verification status
-
-The implementation is committed to the `feat/admin-caneca-studio` branch in `osvaldosereia/canecafacil`. Legacy Make scenarios were inspected as design references; all remain inactive. Changed files were read back for static review; no test or build command was run. Runtime activation is still pending access to the correct Caneca Fácil Supabase project and configuration of the Admin/API runtime variables.
+`gpt-image-2.5-sunburst` gera/edita as imagens; `gpt-6-astra` revisa a arte. A geração pode custar por chamada OpenAI e consumir armazenamento/tráfego Supabase, embora não se crie outro projeto.

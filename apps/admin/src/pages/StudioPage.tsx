@@ -14,137 +14,126 @@ interface Job {
   projectId: string;
   title: string | null;
   status: string;
+  processing?: boolean;
   art: Asset | null;
   validation: QualityReview | null;
   mockups: Asset[];
 }
-interface StudioPageProps { client: SupabaseClient; apiUrl: string }
+interface StudioPageProps { client: SupabaseClient }
 
 const statusText: Record<string, string> = {
-  generating_art: 'Criando a arte panorâmica…',
-  generating_mockup: 'Preparando os mockups da caneca…',
+  queued: 'Aguardando geração…',
+  art_pending: 'Criando a arte panorâmica…',
+  review_pending: 'Conferindo a arte com o Quality Gate…',
+  correction_pending: 'Ajustando a arte após a conferência…',
+  mockup_front_pending: 'Criando o primeiro mockup…',
+  mockup_back_pending: 'Criando o segundo mockup…',
   needs_review: 'Pronto para revisão',
   failed: 'A geração não foi concluída',
 };
 const apiErrors: Record<string, string> = {
   admin_auth_required: 'Sua sessão expirou. Entre novamente no Admin.',
-  admin_access_required: 'Esta conta não tem acesso de administrador.',
-  admin_access_unavailable: 'Não foi possível validar o acesso agora.',
-  origin_not_allowed: 'A origem do Admin não está configurada na API.',
-  studio_not_configured: 'A API ainda não tem a chave de geração de imagens.',
+  admin_access_required: 'Este e-mail ainda não tem acesso ao Estúdio.',
+  admin_access_unavailable: 'O acesso do Estúdio ainda não está configurado.',
+  studio_not_configured: 'A chave da OpenAI ainda precisa ser configurada no Supabase.',
   invalid_studio_input: 'Confira os campos e a imagem de referência.',
   studio_job_start_failed: 'Não foi possível iniciar o trabalho de criação.',
   studio_job_lookup_failed: 'Não foi possível atualizar o trabalho.',
+  studio_job_step_failed: 'Uma etapa da geração falhou. O trabalho foi marcado para revisão.',
+  studio_job_not_found: 'O trabalho não foi encontrado.',
 };
 const finished = (status: string) => status === 'needs_review' || status === 'failed';
 
-async function accessToken(client: SupabaseClient): Promise<string> {
-  const { data, error } = await client.auth.getSession();
-  if (error || !data.session?.access_token) throw new Error('admin_auth_required');
-  return data.session.access_token;
-}
-async function errorCode(response: Response): Promise<string> {
-  try {
-    const body = (await response.json()) as { error?: unknown };
-    if (typeof body.error === 'string') return body.error;
-  } catch {}
-  return 'studio_job_start_failed';
+async function callStudio(client: SupabaseClient, body: FormData | Record<string, unknown>): Promise<any> {
+  const { data, error } = await client.functions.invoke('caneca-studio', { body });
+  if (error) {
+    let code = 'studio_job_start_failed';
+    const context = (error as { context?: unknown }).context;
+    if (context instanceof Response) {
+      try {
+        const payload = await context.json() as { error?: unknown };
+        if (typeof payload.error === 'string') code = payload.error;
+      } catch {}
+    }
+    throw new Error(code);
+  }
+  return data;
 }
 
-export function StudioPage({ client, apiUrl }: StudioPageProps) {
+function errorMessage(cause: unknown, fallback: string): string {
+  if (cause instanceof Error && apiErrors[cause.message]) return apiErrors[cause.message];
+  return fallback;
+}
+
+export function StudioPage({ client }: StudioPageProps) {
   const [mode, setMode] = useState<'from_scratch' | 'reference'>('from_scratch');
   const [reference, setReference] = useState<File | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const apiBase = apiUrl.trim().replace(/\/+$/, '');
 
   useEffect(() => {
-    if (!job?.projectId || !apiBase || finished(job.status)) return;
     let active = true;
-    let inFlight = false;
+    void callStudio(client, { action: 'latest' })
+      .then((result: { job?: Job | null }) => {
+        if (active && result.job) setJob(result.job);
+      })
+      .catch((cause) => {
+        if (active) setError(errorMessage(cause, 'Não foi possível verificar o último trabalho.'));
+      });
+    return () => { active = false; };
+  }, [client]);
 
-    const refresh = async () => {
-      if (inFlight) return;
-      inFlight = true;
+  useEffect(() => {
+    const projectId = job?.projectId;
+    if (!projectId || !job || finished(job.status)) return;
+    let active = true;
+    let timer: number | undefined;
+
+    const advance = async () => {
       try {
-        const token = await accessToken(client);
-        const response = await fetch(
-          apiBase + '/v1/admin/studio/jobs/' + encodeURIComponent(job.projectId),
-          { headers: { Authorization: 'Bearer ' + token } },
-        );
-        if (!response.ok) {
-          const code = await errorCode(response);
-          throw new Error(apiErrors[code] ?? 'Não foi possível atualizar o trabalho.');
-        }
-        const next = (await response.json()) as Job;
+        const next = await callStudio(client, { action: 'advance', jobId: projectId }) as Job;
         if (!active) return;
-        setJob((previous) => {
-          if (!previous || previous.projectId !== next.projectId) return next;
-          const art = next.art && previous.art?.version === next.art.version
-            ? previous.art : next.art;
-          const mockups = next.mockups.map((asset) =>
-            previous.mockups.find((old) => old.version === asset.version) ?? asset,
-          );
-          return { ...next, art, mockups };
-        });
+        setJob(next);
         setError(null);
+        if (!finished(next.status)) {
+          timer = window.setTimeout(advance, next.processing ? 15000 : 1600);
+        }
       } catch (cause) {
-        if (active) setError(cause instanceof Error ? cause.message : 'Não foi possível atualizar o trabalho.');
-      } finally {
-        inFlight = false;
+        if (!active) return;
+        setError(errorMessage(cause, 'Não foi possível atualizar o trabalho.'));
+        timer = window.setTimeout(advance, 15000);
       }
     };
 
-    const timer = window.setInterval(() => void refresh(), 2200);
-    void refresh();
+    timer = window.setTimeout(advance, 500);
     return () => {
       active = false;
-      window.clearInterval(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [apiBase, client, job?.projectId, job?.status]);
+  }, [client, job?.projectId]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!apiBase) {
-      setError('Configure VITE_API_URL para conectar o Estúdio à API.');
-      return;
-    }
     const formElement = event.currentTarget;
     setBusy(true);
     setError(null);
     setNotice(null);
     setJob(null);
     try {
-      const token = await accessToken(client);
       const form = new FormData(formElement);
+      form.set('action', 'start');
       form.set('creationMode', mode);
       if (reference) form.set('reference', reference);
-      const response = await fetch(apiBase + '/v1/admin/studio/jobs', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + token },
-        body: form,
-      });
-      if (!response.ok) {
-        const code = await errorCode(response);
-        throw new Error(apiErrors[code] ?? 'Não foi possível iniciar a criação.');
-      }
-      const created = (await response.json()) as { projectId: string; status: string };
-      setJob({
-        projectId: created.projectId,
-        title: form.get('title')?.toString() ?? null,
-        status: created.status,
-        art: null,
-        validation: null,
-        mockups: [],
-      });
-      setNotice('Criação iniciada. O Estúdio atualizará os resultados automaticamente.');
+      const created = await callStudio(client, form) as Job;
+      setJob(created);
+      setNotice('Criação iniciada. O Estúdio atualizará cada etapa automaticamente.');
       formElement.reset();
       setReference(null);
       setMode('from_scratch');
     } catch (cause) {
-      setError(cause instanceof Error ? apiErrors[cause.message] ?? cause.message : 'Não foi possível iniciar a criação.');
+      setError(errorMessage(cause, 'Não foi possível iniciar a criação.'));
     } finally {
       setBusy(false);
     }
@@ -221,8 +210,8 @@ export function StudioPage({ client, apiUrl }: StudioPageProps) {
 
             {error ? <p className="studio-alert" role="alert">{error}</p> : null}
             {notice ? <p className="studio-success" role="status">{notice}</p> : null}
-            <button className="studio-submit" disabled={busy} type="submit">
-              {busy ? 'Preparando…' : 'Gerar arte e mockups'}
+            <button className="studio-submit" disabled={busy || Boolean(job && !finished(job.status))} type="submit">
+              {busy ? 'Preparando…' : job && !finished(job.status) ? 'Geração em andamento…' : 'Gerar arte e mockups'}
             </button>
             <p className="studio-note">Confirme o gabarito, a composição e o texto antes de produzir.</p>
           </section>
