@@ -7,24 +7,6 @@ export interface AppProps {
   client?: SupabaseClient;
 }
 
-function StudioOnlyAdmin({ client }: { client: SupabaseClient }) {
-  async function signOut() {
-    await client.auth.signOut();
-  }
-
-  return (
-    <div className="admin-shell">
-      <header className="admin-topbar">
-        <div><strong>Caneca Fácil</strong><span> Estúdio</span></div>
-        <button type="button" onClick={() => void signOut()}>Sair</button>
-      </header>
-      <main className="admin-page admin-page--studio">
-        <StudioPage client={client} />
-      </main>
-    </div>
-  );
-}
-
 export function App({ client }: AppProps) {
   if (!client) {
     return (
@@ -36,9 +18,13 @@ export function App({ client }: AppProps) {
     );
   }
 
-  const content = import.meta.env.VITE_STUDIO_ONLY === 'true'
-    ? <StudioOnlyAdmin client={client} />
-    : <AdminWorkspace client={client} />;
+  if (import.meta.env.VITE_STUDIO_ONLY === 'true') {
+    return <StudioPage client={client} />;
+  }
 
-  return <AuthGate client={client}>{content}</AuthGate>;
+  return (
+    <AuthGate client={client}>
+      <AdminWorkspace client={client} />
+    </AuthGate>
+  );
 }

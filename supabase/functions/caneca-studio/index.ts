@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { corsHeaders } from "@supabase/supabase-js/cors";
+import { corsHeaders as supabaseCorsHeaders } from "@supabase/supabase-js/cors";
 
 const TABLE = "caneca_studio_jobs";
 const BUCKET = "caneca-studio-assets";
@@ -8,6 +8,16 @@ const REVIEW_MODEL = Deno.env.get("OPENAI_REVIEW_MODEL")?.trim() || "gpt-6-astra
 const ART_SIZE = "2400x960";
 const SIGNED_URL_TTL = 900;
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
+const PUBLIC_APP_ORIGIN = "https://osvaldosereia.github.io";
+const PUBLIC_START_LIMIT = 5;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const corsHeaders = {
+  ...supabaseCorsHeaders,
+  "Access-Control-Allow-Origin": PUBLIC_APP_ORIGIN,
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-studio-session",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Vary": "Origin",
+};
 
 type CreationMode = "reference" | "from_scratch";
 type Side = "front" | "back";
@@ -40,7 +50,8 @@ type ArtVersion = { version: number; path: string };
 type MockupAsset = { version: number; side: Side; path: string };
 type JobRow = {
   id: string;
-  created_by: string;
+  created_by: string | null;
+  guest_session_id: string | null;
   title: string;
   input: StudioInput;
   reference_path: string | null;
@@ -142,22 +153,13 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
 
 function serviceClients() {
   const url = Deno.env.get("SUPABASE_URL")?.trim() || "";
-  let publishable = Deno.env.get("SUPABASE_ANON_KEY")?.trim() || "";
-  if (!publishable) {
-    try {
-      publishable = JSON.parse(Deno.env.get("SUPABASE_PUBLISHABLE_KEYS") || "{}").default || "";
-    } catch {}
-  }
   const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")?.trim() || "";
-  if (!url || !publishable || !serviceRole) throw new Error("admin_access_unavailable");
+  if (!url || !serviceRole) throw new Error("studio_access_unavailable");
 
-  const authClient = createClient(url, publishable, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
   const adminClient = createClient(url, serviceRole, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  return { url, authClient, adminClient };
+  return { url, adminClient };
 }
 
 async function resolveOpenAiKey(adminClient: ReturnType<typeof createClient>): Promise<string> {
@@ -169,30 +171,20 @@ async function resolveOpenAiKey(adminClient: ReturnType<typeof createClient>): P
   return typeof data === "string" ? data.trim() : "";
 }
 
-async function authorize(request: Request): Promise<{ user: { id: string }; adminClient: ReturnType<typeof createClient>; url: string } | Response> {
-  const token = request.headers.get("Authorization")?.replace(/^Bearer\s+/i, "").trim();
-  if (!token) return json({ error: "admin_auth_required" }, 401);
+async function authorize(request: Request): Promise<{ sessionId: string; adminClient: ReturnType<typeof createClient>; url: string } | Response> {
+  const sessionId = request.headers.get("x-studio-session")?.trim() || "";
+  if (!SESSION_ID_PATTERN.test(sessionId)) {
+    return json({ error: "studio_session_required" }, 400);
+  }
 
   let clients: ReturnType<typeof serviceClients>;
   try {
     clients = serviceClients();
   } catch {
-    return json({ error: "admin_access_unavailable" }, 503);
-  }
-  const { data, error } = await clients.authClient.auth.getUser(token);
-  if (error || !data.user) return json({ error: "admin_auth_required" }, 401);
-
-  const { data: admin, error: adminError } = await clients.adminClient
-    .from("admin_users")
-    .select("role,is_active")
-    .eq("user_id", data.user.id)
-    .maybeSingle();
-  if (adminError) return json({ error: "admin_access_unavailable" }, 503);
-  if (admin?.is_active !== true || admin.role !== "owner") {
-    return json({ error: "admin_access_required" }, 403);
+    return json({ error: "studio_job_lookup_failed" }, 503);
   }
 
-  return { user: { id: data.user.id }, adminClient: clients.adminClient, url: clients.url };
+  return { sessionId, adminClient: clients.adminClient, url: clients.url };
 }
 
 function safeExtension(mimeType: string): string {
@@ -459,13 +451,13 @@ async function uploadPrivate(
 async function writeJob(
   adminClient: ReturnType<typeof createClient>,
   jobId: string,
-  userId: string,
+  sessionId: string,
   patch: Record<string, unknown>,
 ): Promise<JobRow> {
   const { data, error } = await adminClient.from(TABLE)
     .update({ ...patch, processing: false, processing_started_at: null, updated_at: new Date().toISOString() })
     .eq("id", jobId)
-    .eq("created_by", userId)
+    .eq("guest_session_id", sessionId)
     .select("*")
     .single();
   if (error || !data) throw new Error("studio_job_lookup_failed");
@@ -506,11 +498,11 @@ async function jobSnapshot(
 async function getJob(
   adminClient: ReturnType<typeof createClient>,
   jobId: string,
-  userId: string,
+  sessionId: string,
 ): Promise<JobRow | null> {
   const { data, error } = await adminClient.from(TABLE).select("*")
     .eq("id", jobId)
-    .eq("created_by", userId)
+    .eq("guest_session_id", sessionId)
     .maybeSingle();
   if (error) throw new Error("studio_job_lookup_failed");
   return data as JobRow | null;
@@ -519,12 +511,13 @@ async function getJob(
 async function startJob(
   adminClient: ReturnType<typeof createClient>,
   url: string,
-  userId: string,
+  sessionId: string,
   form: FormData,
 ): Promise<Response> {
   const { input, reference } = await parseInput(form);
   const { data, error } = await adminClient.from(TABLE).insert({
-    created_by: userId,
+    created_by: null,
+    guest_session_id: sessionId,
     title: input.title,
     creation_mode: input.creationMode,
     input,
@@ -567,7 +560,7 @@ async function startJob(
 async function advanceJob(
   adminClient: ReturnType<typeof createClient>,
   url: string,
-  userId: string,
+  sessionId: string,
   jobId: string,
   apiKey: string,
 ): Promise<Response> {
@@ -578,21 +571,21 @@ async function advanceJob(
   const { data: claimed, error: claimError } = await adminClient.from(TABLE)
     .update({ processing: true, processing_started_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", jobId)
-    .eq("created_by", userId)
+    .eq("guest_session_id", sessionId)
     .or("processing.eq.false,processing_started_at.lt." + staleBefore)
     .select("*")
     .maybeSingle();
 
   if (claimError) return json({ error: "studio_job_lookup_failed" }, 500);
   if (!claimed) {
-    const current = await getJob(adminClient, jobId, userId);
+    const current = await getJob(adminClient, jobId, sessionId);
     if (!current) return json({ error: "studio_job_not_found" }, 404);
     return json(await jobSnapshot(adminClient, url, current));
   }
 
   const job = claimed as JobRow;
   if (job.status === "needs_review" || job.status === "failed") {
-    return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+    return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
       status: job.status,
       processing: false,
     })));
@@ -613,7 +606,7 @@ async function advanceJob(
       const bytes = await openAIImage(apiKey, imagePrompt, ART_SIZE, reference);
       const path = job.id + "/art-v1.webp";
       await uploadPrivate(adminClient, path, bytes, "image/webp");
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         status: "review_pending",
         art_versions: [{ version: 1, path }],
         error_code: null,
@@ -628,7 +621,7 @@ async function advanceJob(
       const shouldCorrect = !validation.approved &&
         validation.recommendation === "regenerate" &&
         job.correction_count < 1;
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         validation,
         status: shouldCorrect ? "correction_pending" : "mockup_front_pending",
         error_code: null,
@@ -654,7 +647,7 @@ async function advanceJob(
       const path = job.id + "/art-v2.webp";
       await uploadPrivate(adminClient, path, bytes, "image/webp");
       const versions = [...(Array.isArray(job.art_versions) ? job.art_versions : []), { version: 2, path }];
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         art_versions: versions,
         correction_count: 1,
         status: "review_pending",
@@ -677,7 +670,7 @@ async function advanceJob(
       await uploadPrivate(adminClient, path, bytes, "image/webp");
       const mockups = [...(Array.isArray(job.mockups) ? job.mockups : []), { version, side, path }];
       const isLast = side === "back";
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         mockups,
         status: isLast ? "needs_review" : "mockup_back_pending",
         error_code: null,
@@ -688,7 +681,7 @@ async function advanceJob(
   } catch {
     console.error("[caneca-studio] generation step failed", { jobId: job.id, status: job.status });
     try {
-      const failed = await writeJob(adminClient, job.id, userId, {
+      const failed = await writeJob(adminClient, job.id, sessionId, {
         status: "failed",
         error_code: "studio_job_step_failed",
       });
@@ -699,13 +692,45 @@ async function advanceJob(
   }
 }
 
+type PublicRateDecision = "allowed" | "limited" | "unavailable";
+
+async function checkPublicStartLimit(
+  adminClient: ReturnType<typeof createClient>,
+  request: Request,
+): Promise<PublicRateDecision> {
+  const clientIp = request.headers.get("cf-connecting-ip")?.trim();
+  if (!clientIp) return "unavailable";
+
+  try {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(clientIp));
+    const ipHash = Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    const { data, error } = await adminClient.rpc("consume_caneca_studio_public_limit_v1", {
+      p_client_ip_hash: ipHash,
+      p_limit: PUBLIC_START_LIMIT,
+    });
+    if (error) {
+      console.error("[caneca-studio] public rate-limit check failed");
+      return "unavailable";
+    }
+    return data === true ? "allowed" : "limited";
+  } catch {
+    console.error("[caneca-studio] public rate-limit check failed");
+    return "unavailable";
+  }
+}
+
 async function handleRequest(request: Request): Promise<Response> {
+  if (request.headers.get("origin") !== PUBLIC_APP_ORIGIN) {
+    return json({ error: "studio_origin_not_allowed" }, 403);
+  }
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
 
   const authorization = await authorize(request);
   if (authorization instanceof Response) return authorization;
-  const { user, adminClient, url } = authorization;
+  const { sessionId, adminClient, url } = authorization;
 
   const contentType = request.headers.get("content-type") || "";
   let action: string | null = null;
@@ -725,7 +750,7 @@ async function handleRequest(request: Request): Promise<Response> {
 
   if (action === "latest") {
     const { data, error } = await adminClient.from(TABLE).select("*")
-      .eq("created_by", user.id)
+      .eq("guest_session_id", sessionId)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -736,8 +761,11 @@ async function handleRequest(request: Request): Promise<Response> {
 
   if (action === "start") {
     if (!form) return json({ error: "invalid_studio_input" }, 400);
+    const rateDecision = await checkPublicStartLimit(adminClient, request);
+    if (rateDecision === "limited") return json({ error: "studio_rate_limited" }, 429);
+    if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
     try {
-      return await startJob(adminClient, url, user.id, form);
+      return await startJob(adminClient, url, sessionId, form);
     } catch (error) {
       if (error instanceof Error && error.message === "invalid_studio_input") {
         return json({ error: "invalid_studio_input" }, 400);
@@ -751,7 +779,7 @@ async function handleRequest(request: Request): Promise<Response> {
     if (typeof body.jobId !== "string") return json({ error: "studio_job_not_found" }, 404);
     const apiKey = await resolveOpenAiKey(adminClient);
     if (!apiKey) return json({ error: "openai_provider_secret_unavailable" }, 503);
-    return await advanceJob(adminClient, url, user.id, body.jobId, apiKey);
+    return await advanceJob(adminClient, url, sessionId, body.jobId, apiKey);
   }
 
   return json({ error: "invalid_studio_input" }, 400);

@@ -21,6 +21,23 @@ interface Job {
 }
 interface StudioPageProps { client: SupabaseClient }
 
+const STUDIO_SESSION_KEY = 'caneca-facil-studio-session-v1';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+let fallbackSessionId: string | null = null;
+
+function getStudioSessionId(): string {
+  try {
+    const existing = window.localStorage.getItem(STUDIO_SESSION_KEY);
+    if (existing && UUID_PATTERN.test(existing)) return existing;
+    const sessionId = globalThis.crypto.randomUUID();
+    window.localStorage.setItem(STUDIO_SESSION_KEY, sessionId);
+    return sessionId;
+  } catch {
+    fallbackSessionId ??= globalThis.crypto.randomUUID();
+    return fallbackSessionId;
+  }
+}
+
 const statusText: Record<string, string> = {
   queued: 'Aguardando geração…',
   art_pending: 'Criando a arte panorâmica…',
@@ -32,10 +49,11 @@ const statusText: Record<string, string> = {
   failed: 'A geração não foi concluída',
 };
 const apiErrors: Record<string, string> = {
-  admin_auth_required: 'Sua sessão expirou. Entre novamente no Admin.',
-  admin_access_required: 'Este e-mail ainda não tem acesso ao Estúdio.',
-  admin_access_unavailable: 'O acesso do Estúdio ainda não está configurado.',
-  studio_not_configured: 'A chave da OpenAI ainda precisa ser configurada no Supabase.',
+  studio_session_required: 'Atualize a página para iniciar uma nova sessão do Estúdio.',
+  studio_origin_not_allowed: 'Acesse o Estúdio pelo site oficial do Caneca Fácil.',
+  studio_rate_limited: 'Esta rede atingiu o limite de 5 criações em 24 horas. Tente novamente mais tarde.',
+  studio_rate_limit_unavailable: 'A proteção de uso está indisponível. Tente novamente em alguns minutos.',
+  openai_provider_secret_unavailable: 'A conexão OpenAI do Supabase não está disponível.',
   invalid_studio_input: 'Confira os campos e a imagem de referência.',
   studio_job_start_failed: 'Não foi possível iniciar o trabalho de criação.',
   studio_job_lookup_failed: 'Não foi possível atualizar o trabalho.',
@@ -45,7 +63,10 @@ const apiErrors: Record<string, string> = {
 const finished = (status: string) => status === 'needs_review' || status === 'failed';
 
 async function callStudio(client: SupabaseClient, body: FormData | Record<string, unknown>): Promise<any> {
-  const { data, error } = await client.functions.invoke('caneca-studio', { body });
+  const { data, error } = await client.functions.invoke('caneca-studio', {
+    body,
+    headers: { 'x-studio-session': getStudioSessionId() },
+  });
   if (error) {
     let code = 'studio_job_start_failed';
     const context = (error as { context?: unknown }).context;
@@ -147,7 +168,7 @@ export function StudioPage({ client }: StudioPageProps) {
           <h1>Estúdio de Canecas</h1>
           <p>Descreva a ideia. A automação prepara a arte, executa o Quality Gate visual e cria dois mockups privados.</p>
         </div>
-        <span className="studio-private">Área interna</span>
+        <span className="studio-private">Acesso direto</span>
       </header>
 
       <div className="studio-columns">
