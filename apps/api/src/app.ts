@@ -11,6 +11,7 @@ import { createServerSupabaseClient } from './lib/supabase.js';
 import type { ChatMediaStore } from './media/media-store.js';
 import { createSupabaseChatMediaStore } from './media/supabase-media-store.js';
 import { registerChatUploadRoutes } from './media/upload-routes.js';
+import { registerStudioRoutes } from './studio/routes.js';
 
 export type ApiAppConfig = Partial<ApiConfig>;
 
@@ -86,6 +87,23 @@ export function createApiApp(
   const sessionStore = resolveSessionStore(config, dependencies);
   const messageStore = resolveMessageStore(config, dependencies);
   const mediaStore = resolveMediaStore(config, dependencies);
+
+  if (config.adminOrigin?.trim() && canCreateSupabaseStore(config)) {
+    app.use(
+      '/v1/admin/studio/*',
+      cors({
+        origin: config.adminOrigin,
+        allowMethods: ['GET', 'POST', 'OPTIONS'],
+        allowHeaders: ['Authorization', 'Content-Type'],
+      }),
+    );
+    registerStudioRoutes(app, {
+      client: createSupabaseClient(config),
+      adminOrigin: config.adminOrigin,
+      openAiApiKey: config.openAiApiKey,
+      imageModel: config.openAiImageModel ?? 'gpt-image-2.5-sunburst',
+    });
+  }
 
   if (
     sessionStore &&
