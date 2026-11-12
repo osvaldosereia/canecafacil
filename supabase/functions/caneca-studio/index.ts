@@ -21,22 +21,27 @@ const corsHeaders = {
 };
 
 type CreationMode = "reference" | "from_scratch";
-type Side = "front" | "back";
+type Side = "left" | "right";
+type GenerationSide = Side | "both";
 type StudioInput = {
   title: string;
   creationMode: CreationMode;
-  occasion: string | null;
-  recipient: string | null;
-  mainTheme: string;
-  desiredStyle: string | null;
-  colorPreferences: string[];
-  mandatoryText: string[];
-  mandatoryElements: string[];
-  forbiddenElements: string[];
-  compositionNotes: string | null;
+  artDescription?: string;
+  generationSide?: GenerationSide;
+  mandatoryText?: string[];
+  // Legacy fields remain readable so existing jobs can still be revised.
+  occasion?: string | null;
+  recipient?: string | null;
+  mainTheme?: string;
+  desiredStyle?: string | null;
+  colorPreferences?: string[];
+  mandatoryElements?: string[];
+  forbiddenElements?: string[];
+  compositionNotes?: string | null;
   latestEditInstruction?: string | null;
-  pendingEdit?: { baseVersion: number; instruction: string } | null;
+  pendingEdit?: { baseVersion: number; instruction: string; side?: GenerationSide } | null;
   mockupTargetVersion?: number | null;
+  mockupReferencePaths?: { version: number; leftPath: string; rightPath: string } | null;
   printing?: PrintState;
   printHistory?: PrintState[];
 };
@@ -55,12 +60,13 @@ type QualityReview = {
 type ArtVersion = {
   version: number;
   path: string;
-  source?: "initial" | "operator_edit" | "quality_gate";
+  source?: "initial" | "operator_edit" | "quality_gate" | "operator_upload";
   parentVersion?: number | null;
   instruction?: string | null;
   createdAt?: string;
+  generationSide?: GenerationSide;
 };
-type MockupAsset = { version: number; side: Side; path: string };
+type MockupAsset = { version: number; side: Side | "front" | "back"; path: string };
 type PrintState = {
   approvedVersion: number | null;
   quantity: number;
@@ -135,6 +141,14 @@ function readText(form: FormData, name: string, maxLength: number, required = fa
   return result || null;
 }
 
+function readActionText(form: FormData, name: string, maxLength: number): string | null {
+  try {
+    return readText(form, name, maxLength, true);
+  } catch {
+    return null;
+  }
+}
+
 function readList(form: FormData, name: string, maxItems = 12): string[] {
   const text = readText(form, name, 3000) || "";
   const list = text.split("\n").map((item) => item.trim()).filter(Boolean);
@@ -159,10 +173,96 @@ function detectImageMime(bytes: Uint8Array): string | null {
   return null;
 }
 
+function imageDimensions(bytes: Uint8Array, mimeType: string): { width: number; height: number } | null {
+  if (mimeType === "image/png" && bytes.length >= 24) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return { width: view.getUint32(16), height: view.getUint32(20) };
+  }
+
+  if (mimeType === "image/webp" && bytes.length >= 30) {
+    const readAscii = (start: number, end: number) => String.fromCharCode(...bytes.slice(start, end));
+    let offset = 12;
+    while (offset + 8 <= bytes.length) {
+      const chunk = readAscii(offset, offset + 4);
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const size = view.getUint32(offset + 4, true);
+      const data = offset + 8;
+      if (chunk === "VP8X" && data + 10 <= bytes.length) {
+        const width = 1 + bytes[data + 4] + (bytes[data + 5] << 8) + (bytes[data + 6] << 16);
+        const height = 1 + bytes[data + 7] + (bytes[data + 8] << 8) + (bytes[data + 9] << 16);
+        return { width, height };
+      }
+      if (chunk === "VP8L" && data + 5 <= bytes.length && bytes[data] === 0x2f) {
+        const b1 = bytes[data + 1];
+        const b2 = bytes[data + 2];
+        const b3 = bytes[data + 3];
+        const b4 = bytes[data + 4];
+        const width = 1 + (((b2 & 0x3f) << 8) | b1);
+        const height = 1 + (((b4 & 0x0f) << 10) | (b3 << 2) | ((b2 & 0xc0) >> 6));
+        return { width, height };
+      }
+      if (chunk === "VP8 " && data + 10 <= bytes.length &&
+        bytes[data + 3] === 0x9d && bytes[data + 4] === 0x01 && bytes[data + 5] === 0x2a) {
+        const width = ((bytes[data + 7] & 0x3f) << 8) | bytes[data + 6];
+        const height = ((bytes[data + 9] & 0x3f) << 8) | bytes[data + 8];
+        return { width, height };
+      }
+      offset = data + size + (size & 1);
+    }
+  }
+
+  if (mimeType === "image/jpeg" && bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    const sof = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+    let offset = 2;
+    while (offset + 8 < bytes.length) {
+      if (bytes[offset] !== 0xff) { offset++; continue; }
+      while (bytes[offset] === 0xff) offset++;
+      const marker = bytes[offset++];
+      if (marker === 0xd9 || marker === 0xda) break;
+      if (offset + 2 > bytes.length) break;
+      const length = (bytes[offset] << 8) | bytes[offset + 1];
+      if (sof.has(marker) && offset + 7 < bytes.length) {
+        const height = (bytes[offset + 3] << 8) | bytes[offset + 4];
+        const width = (bytes[offset + 5] << 8) | bytes[offset + 6];
+        return { width, height };
+      }
+      if (length < 2) break;
+      offset += length;
+    }
+  }
+
+  return null;
+}
+
+async function readUploadedImage(
+  form: FormData,
+  name: string,
+  expectedWidth: number,
+  expectedHeight: number,
+): Promise<ReferenceImage> {
+  const value = form.get(name);
+  if (!(value instanceof File) || value.size <= 0 || value.size > MAX_REFERENCE_BYTES ||
+    !["image/png", "image/jpeg", "image/webp"].includes(value.type)) {
+    throw new Error("invalid_studio_input");
+  }
+  const bytes = new Uint8Array(await value.arrayBuffer());
+  const mimeType = detectImageMime(bytes);
+  if (!mimeType || mimeType !== value.type) throw new Error("invalid_studio_input");
+  const dimensions = imageDimensions(bytes, mimeType);
+  if (!dimensions || dimensions.width !== expectedWidth || dimensions.height !== expectedHeight) {
+    throw new Error("invalid_studio_input");
+  }
+  return { bytes, fileName: value.name || name + "." + safeExtension(mimeType), mimeType };
+}
+
 async function parseInput(form: FormData): Promise<{ input: StudioInput; reference: ReferenceImage | null }> {
   const creationMode = readText(form, "creationMode", 20, true);
-  const mainTheme = readText(form, "mainTheme", 500, true);
-  if (!mainTheme || (creationMode !== "reference" && creationMode !== "from_scratch")) {
+  // Accept the previous Pages form during its rolling deployment; the new UI sends only artDescription.
+  const legacyMainTheme = readText(form, "mainTheme", 500);
+  const artDescription = readText(form, "artDescription", 1200) || legacyMainTheme;
+  const generationSide = readText(form, "generationSide", 8) || "both";
+  if (!artDescription || (creationMode !== "reference" && creationMode !== "from_scratch") ||
+    (generationSide !== "left" && generationSide !== "right" && generationSide !== "both")) {
     throw new Error("invalid_studio_input");
   }
 
@@ -182,17 +282,19 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
 
   if ((creationMode === "reference") !== Boolean(reference)) throw new Error("invalid_studio_input");
 
-  const title = readText(form, "title", 100) || ("Caneca - " + mainTheme.slice(0, 80));
+  const title = readText(form, "title", 100) || ("Caneca - " + artDescription.slice(0, 80));
   return {
     input: {
       title,
       creationMode,
+      artDescription,
+      generationSide,
+      mandatoryText: readList(form, "mandatoryText"),
       occasion: readText(form, "occasion", 120),
       recipient: readText(form, "recipient", 120),
-      mainTheme,
+      mainTheme: legacyMainTheme || undefined,
       desiredStyle: readText(form, "desiredStyle", 200),
       colorPreferences: readList(form, "colorPreferences"),
-      mandatoryText: readList(form, "mandatoryText"),
       mandatoryElements: readList(form, "mandatoryElements"),
       forbiddenElements: readList(form, "forbiddenElements"),
       compositionNotes: readText(form, "compositionNotes", 1000),
@@ -252,41 +354,58 @@ function safeExtension(mimeType: string): string {
 }
 
 function makeArtPrompt(input: StudioInput): string {
+  const generationSide = input.pendingEdit?.side || input.generationSide || "both";
+  const description = input.artDescription?.trim() || input.mainTheme?.trim() || "Arte decorativa personalizada para uma caneca.";
+  const sideInstruction = input.pendingEdit && generationSide !== "both"
+    ? generationSide === "left"
+      ? "This is a revision of an existing wrap: change only the LEFT HALF (x=0 to 1199). Preserve the RIGHT HALF (x=1200 to 2399) exactly as it appears in the reference; do not blank, redraw, or shift it."
+      : "This is a revision of an existing wrap: change only the RIGHT HALF (x=1200 to 2399). Preserve the LEFT HALF (x=0 to 1199) exactly as it appears in the reference; do not blank, redraw, or shift it."
+    : generationSide === "left"
+    ? "The requested new art belongs only on the LEFT HALF (x=0 to 1199). Keep the RIGHT HALF (x=1200 to 2399) completely plain white with no artwork, lettering, shadows, or decoration."
+    : generationSide === "right"
+    ? "The requested new art belongs only on the RIGHT HALF (x=1200 to 2399). Keep the LEFT HALF (x=0 to 1199) completely plain white with no artwork, lettering, shadows, or decoration."
+    : "Create one continuous, balanced wrap design across both halves; the left half is x=0 to 1199 and the right half is x=1200 to 2399.";
   const lines = [
     "Create only the flat 2D artwork for printing as a wrap on a ceramic mug. Never draw a mug, product mockup, hands, table, or room.",
     "Final landscape canvas: " + ART_SIZE + " pixels; physical target approximately 24 x 9.5 cm.",
-    "Let the artwork fill the usable height, with small safe margins above and below. Do not squash, stretch, or compress the main design into a low narrow band.",
-    "Keep faces, people, animals, required text, and important symbols comfortably inside the upper and lower edges. Backgrounds, patterns, and natural bleed may continue to the canvas edges.",
-    "Do not invent lettering, names, dates, or random text. Include only exact wording supplied in the briefing.",
-    "Theme: " + input.mainTheme,
+    "The center split is exactly x=1200 px: left-side artwork is the first half of the file; right-side artwork is the second half. Do not mirror or swap the halves.",
+    "Keep important text and artwork comfortably inside the top and bottom print-safe area. Preserve the full canvas and do not stretch, crop, or compress the design.",
+    sideInstruction,
+    "Do not invent lettering, names, dates, or random text. Include only exact wording supplied below.",
+    "Art description: " + description,
   ];
   if (input.occasion) lines.push("Occasion: " + input.occasion);
   if (input.recipient) lines.push("Made for: " + input.recipient);
   if (input.desiredStyle) lines.push("Visual style: " + input.desiredStyle);
-  if (input.colorPreferences.length) lines.push("Color palette: " + input.colorPreferences.join(", "));
-  if (input.mandatoryText.length) {
+  if (input.colorPreferences?.length) lines.push("Color palette: " + input.colorPreferences.join(", "));
+  if (input.mandatoryText?.length) {
     lines.push("Required exact text, preserving accents, spelling, and punctuation: " +
       input.mandatoryText.map((item) => '"' + item + '"').join("; "));
   }
-  if (input.mandatoryElements.length) lines.push("Required visual elements: " + input.mandatoryElements.join("; "));
-  if (input.forbiddenElements.length) lines.push("Elements to avoid: " + input.forbiddenElements.join("; "));
+  if (input.mandatoryElements?.length) lines.push("Required visual elements: " + input.mandatoryElements.join("; "));
+  if (input.forbiddenElements?.length) lines.push("Elements to avoid: " + input.forbiddenElements.join("; "));
   if (input.compositionNotes) lines.push("Composition notes: " + input.compositionNotes);
   if (input.latestEditInstruction) lines.push("Latest requested refinement: " + input.latestEditInstruction);
+  if (input.pendingEdit) {
+    const target = input.pendingEdit.side || generationSide;
+    const targetLabel = target === "both" ? "the entire wrap" : "only the " + target + " half";
+    lines.push("Operator edit request: " + input.pendingEdit.instruction + ". Change " + targetLabel +
+      " only. Preserve the opposite half exactly as it appears in the reference artwork.");
+  }
   lines.push("Create a polished, balanced proposal for human review before production. Do not add watermarks or unrelated lettering.");
   return lines.join("\n");
 }
 
-function makeMockupPrompt(side: Side, input: StudioInput): string {
-  const sideDescription = side === "front"
-    ? "Show the main front face of one classic white ceramic mug."
-    : "Show the opposite side of the same classic white ceramic mug, with the artwork visible around the curve.";
+function makeMockupPrompt(side: Side): string {
+  const sideDescription = side === "left"
+    ? "Show one white ceramic mug with its handle clearly pointing to the LEFT side of the image. Print only the supplied LEFT-HALF artwork on the visible mug surface."
+    : "Show one white ceramic mug with its handle clearly pointing to the RIGHT side of the image. Print only the supplied RIGHT-HALF artwork on the visible mug surface.";
   return [
-    "Create a clean commercial product photograph of one white ceramic mug using the supplied flat artwork as its printed wrap.",
-    "Preserve the supplied artwork colors, text, and visual composition as closely as possible.",
+    "Create a clean commercial product photograph of exactly one white ceramic mug using the supplied side-only artwork as its printed design.",
+    "The supplied image is an exact crop of the corresponding side of the print file. Preserve its colors, text, symbols, and composition; do not redesign, mirror, flip, rotate, swap, or invent any part of it.",
     sideDescription,
     "Use soft natural studio lighting, a simple warm neutral background, and a realistic ceramic finish.",
     "Do not add extra logos, text, props that cover the mug, or additional mugs.",
-    "Theme brief: " + input.mainTheme,
   ].join(" ");
 }
 
@@ -413,22 +532,16 @@ async function reviewArtwork(apiKey: string, bytes: Uint8Array, input: StudioInp
   const reviewerPrompt = [
     "Você é o Quality Gate visual da CanecaFácil.",
     "Analise a arte gerada antes de mostrá-la à equipe. Seja rigoroso com erros objetivos, mas não reprove por preferência estética subjetiva.",
-    "Compare a imagem com o briefing e com os textos exatos exigidos. Verifique: texto/nome exato quando exigido; presença dos elementos essenciais; cortes problemáticos nas laterais; composição utilizável como arte horizontal de caneca; erros visuais evidentes; aderência ao estilo e à paleta.",
+    "Compare a imagem com a descrição e com o texto exato quando houver. Verifique o formato horizontal para impressão, a correspondência do conteúdo com o lado solicitado, a divisão no centro e erros visuais evidentes.",
     "Não invente detalhes sobre a imagem. Se não conseguir verificar algo, marque como incerto e recomende revisão manual.",
     "Aprovação automática só quando brief_ok e edges_ok forem true, exact_text_ok não for false, e não houver blocking_issues.",
     "Retorne apenas JSON válido com: approved (boolean), score (0-100), blocking_issues (array), warnings (array), exact_text_ok (boolean|null), brief_ok (boolean), edges_ok (boolean), recommendation (approve|regenerate|manual_review), concise_note (string).",
   ].join(" ");
   const expectedBrief = {
     title: input.title,
-    occasion: input.occasion,
-    recipient: input.recipient,
-    theme: input.mainTheme,
-    style: input.desiredStyle,
-    colors: input.colorPreferences,
-    exact_text: input.mandatoryText,
-    required_elements: input.mandatoryElements,
-    forbidden_elements: input.forbiddenElements,
-    composition_notes: input.compositionNotes,
+    description: input.artDescription || input.mainTheme || null,
+    requested_side: input.generationSide || "both",
+    exact_text: input.mandatoryText || [],
     latest_edit_instruction: input.latestEditInstruction || null,
     canvas: ART_SIZE,
     reference_image_supplied: input.creationMode === "reference",
@@ -545,6 +658,7 @@ async function jobSnapshot(
       parentVersion: version.parentVersion ?? null,
       instruction: version.instruction ?? null,
       createdAt: version.createdAt ?? null,
+      generationSide: version.generationSide || job.input?.generationSide || "both",
       url: normalizeSignedUrl(url, data.signedUrl),
     };
   }));
@@ -554,12 +668,14 @@ async function jobSnapshot(
     const { data, error } = await adminClient.storage.from(BUCKET)
       .createSignedUrl(asset.path, SIGNED_URL_TTL);
     if (error || !data?.signedUrl) throw new Error("studio_job_lookup_failed");
-    return { version: asset.version, side: asset.side, url: normalizeSignedUrl(url, data.signedUrl) };
+    const side = asset.side === "left" || asset.side === "front" ? "left" : "right";
+    return { version: asset.version, side, url: normalizeSignedUrl(url, data.signedUrl) };
   }));
   return {
     projectId: job.id,
     title: job.title,
     status: job.status,
+    generationSide: job.input?.generationSide || "both",
     processing: job.processing,
     art,
     artVersions,
@@ -693,7 +809,14 @@ async function advanceJob(
       await uploadPrivate(adminClient, path, bytes, "image/webp");
       return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         status: "review_pending",
-        art_versions: [{ version: 1, path, source: "initial", parentVersion: null, createdAt: new Date().toISOString() }],
+        art_versions: [{
+          version: 1,
+          path,
+          source: "initial",
+          parentVersion: null,
+          createdAt: new Date().toISOString(),
+          generationSide: job.input?.generationSide || "both",
+        }],
         error_code: null,
       })));
     }
@@ -722,8 +845,7 @@ async function advanceJob(
         if (!base) throw new Error("studio_art_missing");
         const previous = await downloadPrivate(adminClient, base.path);
         const prompt = makeArtPrompt(job.input) +
-          "\n\nAJUSTE SOLICITADO PELO OPERADOR: " + pendingEdit.instruction +
-          "\nAplique somente esse ajuste e preserve os demais elementos, proporções e textos da versão de referência.";
+          "\nApply only the requested change. Keep all other artwork, spelling, proportions, and placement from the reference unchanged.";
         const bytes = await openAIImage(apiKey, prompt, ART_SIZE, {
           bytes: previous,
           fileName: "caneca-facil-arte-v" + base.version + ".webp",
@@ -739,6 +861,7 @@ async function advanceJob(
           parentVersion: base.version,
           instruction: pendingEdit.instruction,
           createdAt: new Date().toISOString(),
+          generationSide: pendingEdit.side || job.input?.generationSide || "both",
         }];
         return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
           input: nextInput,
@@ -773,6 +896,7 @@ async function advanceJob(
         parentVersion: art.version,
         instruction: corrections,
         createdAt: new Date().toISOString(),
+        generationSide: job.input?.generationSide || "both",
       }];
       return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         art_versions: nextVersions,
@@ -782,29 +906,42 @@ async function advanceJob(
       })));
     }
 
-    if (job.status === "mockup_front_pending" || job.status === "mockup_back_pending") {
-      const side: Side = job.status === "mockup_front_pending" ? "front" : "back";
+    if (["mockup_left_pending", "mockup_right_pending", "mockup_front_pending", "mockup_back_pending"].includes(job.status)) {
+      const side: Side = job.status === "mockup_left_pending" || job.status === "mockup_front_pending" ? "left" : "right";
       const targetVersion = job.input?.mockupTargetVersion;
       const art = (Array.isArray(job.art_versions) ? job.art_versions : [])
         .find((item) => item.version === targetVersion) || latestArt(job);
       if (!art) throw new Error("studio_art_missing");
-      const artBytes = await downloadPrivate(adminClient, art.path);
-      const bytes = await openAIImage(apiKey, makeMockupPrompt(side, job.input), "1024x1024", {
-        bytes: artBytes,
-        fileName: "caneca-facil-arte.webp",
-        mimeType: "image/webp",
+      const references = job.input?.mockupReferencePaths;
+      const referencePath = references?.version === targetVersion
+        ? side === "left" ? references.leftPath : references.rightPath
+        : art.path;
+      const referenceBytes = await downloadPrivate(adminClient, referencePath);
+      const referenceMime = referencePath.endsWith(".png") ? "image/png"
+        : referencePath.endsWith(".jpg") || referencePath.endsWith(".jpeg") ? "image/jpeg" : "image/webp";
+      const bytes = await openAIImage(apiKey, makeMockupPrompt(side), "1024x1024", {
+        bytes: referenceBytes,
+        fileName: "caneca-referencia-lado-" + side + "." + safeExtension(referenceMime),
+        mimeType: referenceMime,
       });
       const version = art.version;
       const path = job.id + "/mockup-v" + version + "-" + side + "-" + Date.now() + ".webp";
       await uploadPrivate(adminClient, path, bytes, "image/webp");
       const mockups = [...(Array.isArray(job.mockups) ? job.mockups : []), { version, side, path }];
-      const isLast = side === "back";
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
+      const isLast = side === "right";
+      const nextInput = isLast
+        ? { ...job.input, mockupTargetVersion: null, mockupReferencePaths: null }
+        : job.input;
+      const updated = await writeJob(adminClient, job.id, sessionId, {
         mockups,
-        status: isLast ? "needs_review" : "mockup_back_pending",
-        input: isLast ? { ...job.input, mockupTargetVersion: null } : job.input,
+        status: isLast ? "needs_review" : "mockup_right_pending",
+        input: nextInput,
         error_code: null,
-      })));
+      });
+      if (isLast && references?.version === targetVersion) {
+        await adminClient.storage.from(BUCKET).remove([references.leftPath, references.rightPath]);
+      }
+      return json(await jobSnapshot(adminClient, url, updated));
     }
 
     throw new Error("studio_job_step_failed");
@@ -815,6 +952,8 @@ async function advanceJob(
         status: "failed",
         error_code: "studio_job_step_failed",
       });
+      const references = job.input?.mockupReferencePaths;
+      if (references) await adminClient.storage.from(BUCKET).remove([references.leftPath, references.rightPath]);
       return json(await jobSnapshot(adminClient, url, failed));
     } catch {
       return json({ error: "studio_job_step_failed" }, 500);
@@ -935,11 +1074,83 @@ async function handleRequest(request: Request): Promise<Response> {
     }
   }
 
+  if (action === "upload_art") {
+    if (!form) return json({ error: "invalid_studio_input" }, 400);
+    const jobId = readActionText(form, "jobId", 36) || "";
+    const version = Number(readActionText(form, "version", 12) || "");
+    const sideValue = readActionText(form, "side", 8);
+    if (!isValidJobId(jobId) || !Number.isInteger(version) || version < 1 ||
+      (sideValue !== "left" && sideValue !== "right")) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+
+    let artwork: ReferenceImage;
+    try {
+      artwork = await readUploadedImage(form, "artwork", 2400, 960);
+    } catch {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+
+    const job = await getJob(adminClient, jobId, sessionId);
+    if (!job) return json({ error: "studio_job_not_found" }, 404);
+    const versions = Array.isArray(job.art_versions) ? job.art_versions : [];
+    const base = versions.find((item) => item.version === version);
+    if (!base || job.status !== "needs_review" || job.processing) {
+      return json({ error: "studio_job_conflict" }, 409);
+    }
+
+    const nextVersion = versions.reduce((max, item) => Math.max(max, item.version), 0) + 1;
+    const path = job.id + "/art-v" + nextVersion + "-" + crypto.randomUUID() + ".webp";
+    let updated: JobRow;
+    try {
+      await uploadPrivate(adminClient, path, artwork.bytes, artwork.mimeType);
+      const side = sideValue as Side;
+      const nextInput = archivePrintState(job.input);
+      nextInput.generationSide = side;
+      nextInput.pendingEdit = null;
+      nextInput.latestEditInstruction = null;
+      nextInput.mockupTargetVersion = null;
+      nextInput.mockupReferencePaths = null;
+      const nextVersions = [...versions, {
+        version: nextVersion,
+        path,
+        source: "operator_upload" as const,
+        parentVersion: base.version,
+        instruction: "Arte pronta enviada para o lado " + side + ".",
+        createdAt: new Date().toISOString(),
+        generationSide: side,
+      }];
+      updated = await writeJob(adminClient, job.id, sessionId, {
+        input: nextInput,
+        art_versions: nextVersions,
+        validation: null,
+        mockups: [],
+        status: "needs_review",
+        error_code: null,
+      }, job.updated_at);
+    } catch {
+      await adminClient.storage.from(BUCKET).remove([path]);
+      return json({ error: "studio_job_conflict" }, 409);
+    }
+    const oldMockups = (Array.isArray(job.mockups) ? job.mockups : []).map((asset) => asset.path);
+    const oldReferences = job.input.mockupReferencePaths;
+    const removePaths = [
+      ...oldMockups,
+      ...(oldReferences ? [oldReferences.leftPath, oldReferences.rightPath] : []),
+    ];
+    if (removePaths.length) await adminClient.storage.from(BUCKET).remove(removePaths);
+    return json(await jobSnapshot(adminClient, url, updated));
+  }
+
   if (action === "edit") {
     if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
     const version = Number(body.version);
     const instruction = typeof body.instruction === "string" ? body.instruction.trim() : "";
+    const side = body.side === undefined ? "both" : body.side;
     if (!Number.isInteger(version) || version < 1 || instruction.length < 3 || instruction.length > 800) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    if (side !== "left" && side !== "right" && side !== "both") {
       return json({ error: "invalid_studio_input" }, 400);
     }
     const job = await getJob(adminClient, body.jobId, sessionId);
@@ -954,7 +1165,8 @@ async function handleRequest(request: Request): Promise<Response> {
 
     try {
       const nextInput = archivePrintState(job.input);
-      nextInput.pendingEdit = { baseVersion: version, instruction };
+      nextInput.generationSide = side as GenerationSide;
+      nextInput.pendingEdit = { baseVersion: version, instruction, side: side as GenerationSide };
       nextInput.latestEditInstruction = instruction;
       const updated = await writeJob(adminClient, job.id, sessionId, {
         input: nextInput,
@@ -972,9 +1184,21 @@ async function handleRequest(request: Request): Promise<Response> {
   }
 
   if (action === "mockups") {
-    if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
-    const version = Number(body.version);
-    const job = await getJob(adminClient, body.jobId, sessionId);
+    if (!form) return json({ error: "invalid_studio_input" }, 400);
+    const jobId = readActionText(form, "jobId", 36) || "";
+    const version = Number(readActionText(form, "version", 12) || "");
+    if (!isValidJobId(jobId) || !Number.isInteger(version) || version < 1) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    let leftReference: ReferenceImage;
+    let rightReference: ReferenceImage;
+    try {
+      leftReference = await readUploadedImage(form, "leftReference", 1200, 960);
+      rightReference = await readUploadedImage(form, "rightReference", 1200, 960);
+    } catch {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    const job = await getJob(adminClient, jobId, sessionId);
     if (!job) return json({ error: "studio_job_not_found" }, 404);
     const versions = Array.isArray(job.art_versions) ? job.art_versions : [];
     if (!Number.isInteger(version) || !versions.some((item) => item.version === version) ||
@@ -983,20 +1207,37 @@ async function handleRequest(request: Request): Promise<Response> {
     if (rateDecision === "limited") return json({ error: "studio_rate_limited" }, 429);
     if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
 
+    const stamp = Date.now() + "-" + crypto.randomUUID();
+    const leftPath = job.id + "/mockup-reference-v" + version + "-left-" + stamp + ".webp";
+    const rightPath = job.id + "/mockup-reference-v" + version + "-right-" + stamp + ".webp";
+    let leftUploaded = false;
+    let updated: JobRow;
     try {
+      await uploadPrivate(adminClient, leftPath, leftReference.bytes, leftReference.mimeType);
+      leftUploaded = true;
+      await uploadPrivate(adminClient, rightPath, rightReference.bytes, rightReference.mimeType);
       const removed = (Array.isArray(job.mockups) ? job.mockups : [])
         .filter((asset) => asset.version === version).map((asset) => asset.path);
-      const updated = await writeJob(adminClient, job.id, sessionId, {
-        input: { ...job.input, mockupTargetVersion: version },
+      const previousReferences = job.input.mockupReferencePaths;
+      updated = await writeJob(adminClient, job.id, sessionId, {
+        input: {
+          ...job.input,
+          mockupTargetVersion: version,
+          mockupReferencePaths: { version, leftPath, rightPath },
+        },
         mockups: (Array.isArray(job.mockups) ? job.mockups : []).filter((asset) => asset.version !== version),
-        status: "mockup_front_pending",
+        status: "mockup_left_pending",
         error_code: null,
       }, job.updated_at);
       if (removed.length) await adminClient.storage.from(BUCKET).remove(removed);
-      return json(await jobSnapshot(adminClient, url, updated), 202);
+      if (previousReferences) {
+        await adminClient.storage.from(BUCKET).remove([previousReferences.leftPath, previousReferences.rightPath]);
+      }
     } catch {
+      await adminClient.storage.from(BUCKET).remove(leftUploaded ? [leftPath, rightPath] : [leftPath]);
       return json({ error: "studio_job_conflict" }, 409);
     }
+    return json(await jobSnapshot(adminClient, url, updated), 202);
   }
 
   if (action === "approve") {

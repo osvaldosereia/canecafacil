@@ -1,17 +1,20 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { PromptLibraryPanel } from '../components/PromptLibraryPanel';
+import { composeSideArtwork, createMockupSideReference, type MugArtSide } from '../lib/mug-artwork';
 import { composePromptNotes, type QuickPromptCommand } from '../lib/prompt-library';
 import './StudioPage.css';
 
+type GenerationSide = MugArtSide | 'both';
 type Asset = { version: number; url: string };
 type ArtVersion = Asset & {
-  source: 'initial' | 'operator_edit' | 'quality_gate';
+  source: 'initial' | 'operator_edit' | 'quality_gate' | 'operator_upload';
   parentVersion: number | null;
   instruction: string | null;
   createdAt: string | null;
+  generationSide?: GenerationSide;
 };
-type MockupAsset = Asset & { side: 'front' | 'back' };
+type MockupAsset = Asset & { side: MugArtSide };
 type QualityReview = {
   approved: boolean;
   score: number;
@@ -31,6 +34,7 @@ interface Job {
   projectId: string;
   title: string | null;
   status: string;
+  generationSide?: GenerationSide;
   processing?: boolean;
   art: Asset | null;
   artVersions: ArtVersion[];
@@ -71,8 +75,10 @@ const statusText: Record<string, string> = {
   art_pending: 'Criando a arte para impressão…',
   review_pending: 'Conferindo texto e composição…',
   correction_pending: 'Aplicando o ajuste solicitado…',
-  mockup_front_pending: 'Criando a primeira prévia…',
-  mockup_back_pending: 'Criando a segunda prévia…',
+  mockup_front_pending: 'Criando a prévia com a alça à esquerda…',
+  mockup_back_pending: 'Criando a prévia com a alça à direita…',
+  mockup_left_pending: 'Criando a prévia com a alça à esquerda…',
+  mockup_right_pending: 'Criando a prévia com a alça à direita…',
   needs_review: 'Arte pronta para sua revisão',
   failed: 'Esta etapa não foi concluída',
 };
@@ -90,6 +96,10 @@ const apiErrors: Record<string, string> = {
   studio_job_lookup_failed: 'Não foi possível carregar o projeto.',
   studio_job_step_failed: 'Uma etapa da criação falhou. Confira o status e tente novamente.',
   studio_job_not_found: 'Este projeto não foi encontrado.',
+  studio_art_load_failed: 'Não foi possível abrir a arte atual para preservar o outro lado. Atualize a tela e tente novamente.',
+  studio_art_dimensions_invalid: 'A arte selecionada não está no formato de impressão 2400 × 960 px.',
+  studio_art_file_too_large: 'O arquivo precisa ter até 8 MB. Escolha uma imagem menor.',
+  studio_art_export_failed: 'O navegador não conseguiu preparar a imagem. Tente novamente em outro navegador.',
 };
 const finished = (status: string) => status === 'needs_review' || status === 'failed';
 
@@ -120,7 +130,14 @@ function errorMessage(cause: unknown, fallback: string): string {
 function sourceText(version: ArtVersion): string {
   if (version.source === 'initial') return 'Criação inicial';
   if (version.source === 'quality_gate') return 'Ajuste automático de qualidade';
+  if (version.source === 'operator_upload') return 'Arte pronta enviada';
   return 'Ajuste solicitado';
+}
+
+function sideText(side: GenerationSide | undefined): string {
+  if (side === 'left') return 'lado esquerdo';
+  if (side === 'right') return 'lado direito';
+  return 'caneca inteira';
 }
 
 function formatDate(value: string): string {
@@ -129,12 +146,14 @@ function formatDate(value: string): string {
 
 export function StudioPage({ client }: StudioPageProps) {
   const [mode, setMode] = useState<'from_scratch' | 'reference'>('from_scratch');
+  const [generationSide, setGenerationSide] = useState<GenerationSide>('both');
   const [reference, setReference] = useState<File | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [latestVersionSeen, setLatestVersionSeen] = useState<number | null>(null);
   const [editInstruction, setEditInstruction] = useState('');
+  const [editSide, setEditSide] = useState<GenerationSide>('both');
   const [selectedQuickCommands, setSelectedQuickCommands] = useState<QuickPromptCommand[]>([]);
   const [quantity, setQuantity] = useState('1');
   const [printUrl, setPrintUrl] = useState<string | null>(null);
@@ -209,9 +228,9 @@ export function StudioPage({ client }: StudioPageProps) {
     event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    let compositionNotes: string;
+    let artDescription: string;
     try {
-      compositionNotes = composePromptNotes(String(form.get('compositionNotes') ?? ''), selectedQuickCommands);
+      artDescription = composePromptNotes(String(form.get('artDescription') ?? ''), selectedQuickCommands);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Reduza as instruções antes de gerar a arte.');
       setNotice(null);
@@ -223,7 +242,8 @@ export function StudioPage({ client }: StudioPageProps) {
     try {
       form.set('action', 'start');
       form.set('creationMode', mode);
-      form.set('compositionNotes', compositionNotes);
+      form.set('generationSide', generationSide);
+      form.set('artDescription', artDescription);
       if (reference) form.set('reference', reference);
       const created = await callStudio(client, form) as Job;
       setLatestVersionSeen(null);
@@ -233,6 +253,7 @@ export function StudioPage({ client }: StudioPageProps) {
       setSelectedQuickCommands([]);
       setReference(null);
       setMode('from_scratch');
+      setGenerationSide('both');
       void refreshHistory().catch(() => undefined);
     } catch (cause) {
       setError(errorMessage(cause, 'Não foi possível iniciar a criação.'));
@@ -263,11 +284,13 @@ export function StudioPage({ client }: StudioPageProps) {
     setNotice(null);
     try {
       const updated = await callStudio(client, {
-        action: 'edit', jobId: job.projectId, version: selectedVersion, instruction: editInstruction.trim(),
+        action: 'edit', jobId: job.projectId, version: selectedVersion, side: editSide,
+        instruction: editInstruction.trim(),
       }) as Job;
       acceptJob(updated);
       setEditInstruction('');
-      setNotice('Ajuste solicitado. A versão anterior continuará disponível no histórico.');
+      setEditSide('both');
+      setNotice(`Ajuste solicitado para ${sideText(editSide)}. A versão anterior continuará disponível no histórico.`);
       void refreshHistory().catch(() => undefined);
     } catch (cause) {
       setError(errorMessage(cause, 'Não foi possível solicitar esse ajuste.'));
@@ -277,21 +300,60 @@ export function StudioPage({ client }: StudioPageProps) {
   }
 
   async function generateMockups() {
-    if (!job || selectedVersion === null) return;
+    if (!job || !chosenArt || selectedVersion === null) return;
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const updated = await callStudio(client, {
-        action: 'mockups', jobId: job.projectId, version: selectedVersion,
-      }) as Job;
+      const [leftReference, rightReference] = await Promise.all([
+        createMockupSideReference(chosenArt.url, 'left'),
+        createMockupSideReference(chosenArt.url, 'right'),
+      ]);
+      const form = new FormData();
+      form.set('action', 'mockups');
+      form.set('jobId', job.projectId);
+      form.set('version', String(selectedVersion));
+      form.set('leftReference', leftReference);
+      form.set('rightReference', rightReference);
+      const updated = await callStudio(client, form) as Job;
       acceptJob(updated);
-      setNotice('Pré-vias iniciadas. Esta opção gera duas imagens extras usando OpenAI.');
+      setNotice('Pré-vias iniciadas: alça à esquerda com a metade esquerda da arte; alça à direita com a metade direita.');
     } catch (cause) {
       setError(errorMessage(cause, 'Não foi possível gerar as prévias.'));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function uploadSideArtwork(side: MugArtSide, file: File) {
+    if (!job || !chosenArt || selectedVersion === null || job.status !== 'needs_review') return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const artwork = await composeSideArtwork(chosenArt.url, side, file);
+      const form = new FormData();
+      form.set('action', 'upload_art');
+      form.set('jobId', job.projectId);
+      form.set('version', String(selectedVersion));
+      form.set('side', side);
+      form.set('artwork', artwork);
+      const updated = await callStudio(client, form) as Job;
+      setLatestVersionSeen(null);
+      acceptJob(updated, true);
+      setNotice(`Arte pronta aplicada somente no ${sideText(side)}. O outro lado foi preservado.`);
+      void refreshHistory().catch(() => undefined);
+    } catch (cause) {
+      setError(errorMessage(cause, 'Não foi possível aplicar essa arte pronta. Use PNG, JPEG ou WebP de até 8 MB.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleSideFile(side: MugArtSide, event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (file) void uploadSideArtwork(side, file);
   }
 
   async function approveForPrint(event: FormEvent<HTMLFormElement>) {
@@ -405,6 +467,16 @@ export function StudioPage({ client }: StudioPageProps) {
                 <input name="title" maxLength={100} placeholder="Ex.: Presente da Marina" />
               </label>
 
+              <div className="studio-field studio-side-field">
+                <span>Qual parte da caneca?</span>
+                <div className="studio-mode studio-side-choice" role="radiogroup" aria-label="Parte da caneca para criar">
+                  <label><input type="radio" name="generationSide" checked={generationSide === 'left'} onChange={() => setGenerationSide('left')} /> Lado esquerdo</label>
+                  <label><input type="radio" name="generationSide" checked={generationSide === 'right'} onChange={() => setGenerationSide('right')} /> Lado direito</label>
+                  <label><input type="radio" name="generationSide" checked={generationSide === 'both'} onChange={() => setGenerationSide('both')} /> Caneca inteira</label>
+                </div>
+                <small>“Caneca inteira” cria uma arte panorâmica que ocupa os dois lados.</small>
+              </div>
+
               <div className="studio-field">
                 <span>Como começar?</span>
                 <div className="studio-mode">
@@ -424,30 +496,14 @@ export function StudioPage({ client }: StudioPageProps) {
                 </label>
               ) : null}
 
-              <div className="studio-two">
-                <label className="studio-field"><span>Ocasião</span><input name="occasion" maxLength={120} placeholder="Aniversário, agradecimento…" /></label>
-                <label className="studio-field"><span>Para quem?</span><input name="recipient" maxLength={120} placeholder="Nome ou relação" /></label>
-              </div>
-
               <label className="studio-field">
-                <span>Tema principal</span>
-                <textarea name="mainTheme" maxLength={500} required rows={3} placeholder="A ideia central e o que a arte deve transmitir." />
+                <span>Descreva a arte</span>
+                <textarea name="artDescription" maxLength={1200} required rows={4}
+                  placeholder="Escreva com suas palavras o que você quer ver na caneca. Ex.: flores amarelas e folhas verdes, com aparência delicada." />
               </label>
 
-              <div className="studio-two">
-                <label className="studio-field"><span>Estilo visual</span><input name="desiredStyle" maxLength={200} placeholder="Minimalista, aquarela…" /></label>
-                <label className="studio-field"><span>Cores</span><textarea name="colorPreferences" maxLength={500} rows={2} placeholder="Uma cor por linha" /></label>
-              </div>
-
-              <label className="studio-field"><span>Texto exato da arte</span>
-                <textarea name="mandatoryText" rows={2} maxLength={1000} placeholder="Uma frase ou nome por linha" />
-              </label>
-              <div className="studio-two">
-                <label className="studio-field"><span>Elementos obrigatórios</span><textarea name="mandatoryElements" rows={3} maxLength={800} placeholder="Um elemento por linha" /></label>
-                <label className="studio-field"><span>O que evitar</span><textarea name="forbiddenElements" rows={3} maxLength={800} placeholder="Um item por linha" /></label>
-              </div>
-              <label className="studio-field"><span>Composição e margens</span>
-                <textarea name="compositionNotes" rows={3} maxLength={1000} placeholder="Posicionamento, equilíbrio, margem ou detalhes" />
+              <label className="studio-field"><span>Texto exato (opcional)</span>
+                <textarea name="mandatoryText" rows={2} maxLength={1000} placeholder="Escreva somente o texto que deve aparecer, com a grafia exata." />
               </label>
             </section>
 
@@ -460,7 +516,7 @@ export function StudioPage({ client }: StudioPageProps) {
               <button className="studio-submit" disabled={busy || Boolean(job && !finished(job.status))} type="submit">
                 {busy ? 'Preparando…' : job && !finished(job.status) ? 'Criação em andamento…' : 'Gerar arte para impressão'}
               </button>
-              <p className="studio-note">Sem login. Limite de 5 ações por IP a cada 24 h. Uma correção automática pode gerar outra imagem; os 2 mockups são opcionais.</p>
+              <p className="studio-note">Sem login. Limite de 5 ações de geração por IP a cada 24 h. As prévias com a caneca são opcionais.</p>
             </section>
           </form>
 
@@ -490,7 +546,7 @@ export function StudioPage({ client }: StudioPageProps) {
               <div><h2>Arte e versões</h2><p>{job?.title || 'Acompanhe a criação e faça ajustes.'}</p></div>
             </div>
 
-            {!job ? <div className="studio-empty"><b aria-hidden="true">✳</b><p>Preencha o briefing para começar.</p></div> : <>
+            {!job ? <div className="studio-empty"><b aria-hidden="true">✳</b><p>Descreva a arte para começar.</p></div> : <>
               <div className={'studio-status' + (job.status === 'failed' ? ' failed' : '')}>
                 <i />{statusText[job.status] ?? 'Processamento em andamento…'}
               </div>
@@ -509,10 +565,31 @@ export function StudioPage({ client }: StudioPageProps) {
                 {chosenArt ? <figure className="studio-art">
                   <img src={chosenArt.url} alt={`Arte panorâmica para impressão, versão ${chosenArt.version}`} />
                   <figcaption>
-                    <span>Arte aberta · versão {chosenArt.version} · 2400 × 960 px</span>
+                    <span>Arte para impressão · versão {chosenArt.version} · 2400 × 960 px · {sideText(chosenArt.generationSide ?? job.generationSide)}</span>
                     <a href={chosenArt.url} target="_blank" rel="noreferrer" download>Baixar arquivo</a>
                   </figcaption>
                 </figure> : null}
+
+                {chosenArt && job.status === 'needs_review' ? <section className="studio-side-upload" aria-label="Subir arte pronta por lado">
+                  <div className="studio-section-heading">
+                    <div><h3>Subir arte pronta</h3><p>Troque um lado da caneca e preserve o outro.</p></div>
+                  </div>
+                  <div className="studio-side-upload-grid">
+                    <label className="studio-side-upload-control">
+                      <span>Lado esquerdo</span>
+                      <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy}
+                        onChange={(event) => handleSideFile('left', event)} />
+                      <small>Aplica a imagem somente na metade esquerda.</small>
+                    </label>
+                    <label className="studio-side-upload-control">
+                      <span>Lado direito</span>
+                      <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy}
+                        onChange={(event) => handleSideFile('right', event)} />
+                      <small>Aplica a imagem somente na metade direita.</small>
+                    </label>
+                  </div>
+                  <p className="studio-side-upload-note">PNG, JPEG ou WebP até 8 MB. A imagem é ajustada sem esticar e salva como nova versão de impressão.</p>
+                </section> : null}
 
                 {chosenArt?.instruction ? <p className="studio-version-note">{sourceText(chosenArt)}: {chosenArt.instruction}</p> : null}
 
@@ -530,24 +607,32 @@ export function StudioPage({ client }: StudioPageProps) {
 
                 {job.status === 'needs_review' ? <>
                   <section className="studio-action-card">
-                    <div className="studio-section-heading"><div><h3>Ajustar esta versão</h3><p>Peça uma mudança em linguagem natural; a versão atual será preservada.</p></div></div>
+                    <div className="studio-section-heading"><div><h3>Ajustar esta versão</h3><p>Escolha um lado ou a caneca inteira. A versão atual fica no histórico.</p></div></div>
+                    <div className="studio-field studio-edit-side">
+                      <span>Aplicar o ajuste em</span>
+                      <div className="studio-mode" role="radiogroup" aria-label="Lado da caneca para ajustar">
+                        <label><input type="radio" name="editSide" checked={editSide === 'left'} onChange={() => setEditSide('left')} /> Lado esquerdo</label>
+                        <label><input type="radio" name="editSide" checked={editSide === 'right'} onChange={() => setEditSide('right')} /> Lado direito</label>
+                        <label><input type="radio" name="editSide" checked={editSide === 'both'} onChange={() => setEditSide('both')} /> Caneca inteira</label>
+                      </div>
+                    </div>
                     <label className="studio-field">
                       <span>O que você quer mudar na versão {selectedVersion}?</span>
                       <textarea value={editInstruction} maxLength={800} rows={3} onChange={(event) => setEditInstruction(event.currentTarget.value)}
-                        placeholder="Ex.: deixe o fundo mais claro e mantenha o nome e a posição do desenho." />
+                        placeholder="Ex.: no lado esquerdo, troque as flores azuis por flores amarelas e mantenha o restante." />
                     </label>
                     <button className="studio-secondary" type="button" disabled={busy || editInstruction.trim().length < 3}
                       onClick={() => void requestEdit()}>Criar nova versão com esse ajuste</button>
                   </section>
 
                   <section className="studio-action-card studio-optional-card">
-                    <div className="studio-section-heading"><div><h3>Ver a arte na caneca</h3><p>Gera duas prévias de produto; não são usadas para imprimir.</p></div></div>
+                    <div className="studio-section-heading"><div><h3>Ver a arte na caneca</h3><p>O mockup da esquerda usa a metade esquerda; o da direita usa a metade direita.</p></div></div>
                     <button className="studio-quiet-button" type="button" disabled={busy}
-                      onClick={() => void generateMockups()}>Gerar 2 mockups desta versão</button>
+                      onClick={() => void generateMockups()}>Gerar mockups com as duas alças</button>
                     {selectedMockups.length ? <div className="studio-mockups">
                       {selectedMockups.map((asset) => <figure key={`${asset.version}-${asset.side}`}>
-                        <img src={asset.url} alt={`Mockup de caneca, ${asset.side === 'front' ? 'vista frontal' : 'vista oposta'}`} />
-                        <figcaption><span>{asset.side === 'front' ? 'Vista frontal' : 'Vista oposta'}</span>
+                        <img src={asset.url} alt={`Mockup de caneca com a alça à ${asset.side === 'left' ? 'esquerda' : 'direita'}`} />
+                        <figcaption><span>Alça à {asset.side === 'left' ? 'esquerda' : 'direita'}</span>
                           <a href={asset.url} target="_blank" rel="noreferrer" download>Abrir</a></figcaption>
                       </figure>)}
                     </div> : null}
