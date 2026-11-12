@@ -19,7 +19,11 @@ export function App({ client }: AppProps) {
   }
 
   if (import.meta.env.VITE_STUDIO_ONLY === 'true') {
-    return <StudioPage client={client} />;
+    return (
+      <AuthGate client={client}>
+        <StudioPage client={client} />
+      </AuthGate>
+    );
   }
 
   return (

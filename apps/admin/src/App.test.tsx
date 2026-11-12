@@ -17,15 +17,14 @@ describe('App', () => {
     expect(html).not.toContain('Painel operacional do atendimento');
   });
 
-  it('abre o Estúdio diretamente no GitHub Pages sem pedir e-mail ou senha', () => {
+  it('protege o Estúdio do GitHub Pages com a autenticação administrativa', () => {
     vi.stubEnv('VITE_STUDIO_ONLY', 'true');
     try {
       const client = {} as SupabaseClient;
       const html = renderToStaticMarkup(<App client={client} />);
 
-      expect(html).toContain('Estúdio de Canecas');
-      expect(html).not.toContain('Entrar no Caneca Fácil');
-      expect(html).not.toContain('type="password"');
+      expect(html).toContain('Verificando acesso');
+      expect(html).not.toContain('Estúdio de Canecas');
     } finally {
       vi.unstubAllEnvs();
     }
