@@ -52,6 +52,7 @@ interface Job {
   title: string | null;
   status: string;
   generationSide?: GenerationSide;
+  referenceUrl?: string | null;
   processing?: boolean;
   art: Asset | null;
   artVersions: ArtVersion[];
@@ -161,6 +162,24 @@ function formatDate(value: string): string {
   return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
 }
 
+function descriptionWithoutSelectedCommands(configuration: SavedCreationConfiguration): string {
+  const commands = configuration.selectedCommands || [];
+  let description = configuration.artDescription || '';
+  if (commands.length) {
+    try {
+      const commandNotes = composePromptNotes('', commands);
+      const commandSuffix = `\n\n${commandNotes}`;
+      if (description.endsWith(commandSuffix)) description = description.slice(0, -commandSuffix.length);
+      else if (description === commandNotes) description = '';
+    } catch { /* Keep the saved description if commands are no longer valid. */ }
+  }
+  return description;
+}
+
+function usesPreviousArtAsReference(version: ArtVersion): boolean {
+  return (version.source === 'operator_edit' || version.source === 'quality_gate') && version.parentVersion !== null && version.parentVersion !== undefined;
+}
+
 export function StudioPage({ client }: StudioPageProps) {
   const [mode, setMode] = useState<'from_scratch' | 'reference'>('from_scratch');
   const [generationSide, setGenerationSide] = useState<GenerationSide>('both');
@@ -184,8 +203,12 @@ export function StudioPage({ client }: StudioPageProps) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [restoredVersion, setRestoredVersion] = useState<number | null>(null);
+  const [restoredVersionNote, setRestoredVersionNote] = useState<string | null>(null);
+  const [restoringReference, setRestoringReference] = useState(false);
   const printImageRef = useRef<HTMLImageElement>(null);
   const skipInitialAutoOpenRef = useRef(false);
+  const restoreRequestRef = useRef(0);
 
   function acceptJob(next: Job | null, forceLatest = false) {
     setJob(next);
@@ -195,6 +218,74 @@ export function StudioPage({ client }: StudioPageProps) {
       setSelectedVersion(newest);
     }
     if (next?.printing?.quantity) setQuantity(String(next.printing.quantity));
+  }
+
+  async function restoreConfigurationFromArt(sourceJob: Job, version: ArtVersion) {
+    const requestId = ++restoreRequestRef.current;
+    const configuration = version.configuration;
+    setError(null);
+    setNotice(null);
+    setRestoringReference(false);
+    setRestoredVersion(version.version);
+    setRestoredVersionNote(version.instruction?.trim() || null);
+    setReference(null);
+    setSideArtworkFiles({ left: null, right: null });
+    setEditInstruction('');
+    setEditSide('both');
+    setReusedConfiguration(null);
+    setExcludedReusedCommandIds([]);
+
+    if (!configuration) {
+      setProjectTitle(sourceJob.title || '');
+      setArtDescription('');
+      setMandatoryText('');
+      setGenerationSide(version.generationSide || sourceJob.generationSide || 'both');
+      setMode('from_scratch');
+      setSideScales({ left: 100, right: 100 });
+      setSelectedQuickCommands([]);
+      setRestoredVersion(null);
+      setNotice('Esta versão antiga não tem a configuração original registrada. Os dados disponíveis foram preservados no histórico.');
+      return;
+    }
+
+    const commands = Array.isArray(configuration.selectedCommands) ? configuration.selectedCommands : [];
+    setProjectTitle(configuration.title || sourceJob.title || '');
+    setArtDescription(descriptionWithoutSelectedCommands({ ...configuration, selectedCommands: commands }));
+    setMandatoryText((configuration.mandatoryText || []).join('\n'));
+    setGenerationSide(configuration.generationSide || version.generationSide || sourceJob.generationSide || 'both');
+    const previousArtIsReference = usesPreviousArtAsReference(version);
+    const needsReference = previousArtIsReference || configuration.creationMode === 'reference';
+    setMode(needsReference ? 'reference' : 'from_scratch');
+    setSideScales(configuration.sizeBySide || { left: 100, right: 100 });
+    setSelectedQuickCommands(commands);
+
+    if (!needsReference) return;
+    const referenceUrl = previousArtIsReference
+      ? sourceJob.artVersions.find((item) => item.version === version.parentVersion)?.url
+      : sourceJob.referenceUrl;
+    if (!referenceUrl) {
+      setNotice(`Configuração da versão ${version.version} restaurada. A imagem usada como referência não está disponível; selecione-a novamente antes de gerar.`);
+      return;
+    }
+
+    setRestoringReference(true);
+    try {
+      const response = await fetch(referenceUrl, { mode: 'cors', credentials: 'omit' });
+      if (!response.ok) throw new Error('reference_unavailable');
+      const blob = await response.blob();
+      if (!blob.size || blob.size > 8 * 1024 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(blob.type)) {
+        throw new Error('reference_unavailable');
+      }
+      const extension = blob.type === 'image/jpeg' ? 'jpg' : blob.type.split('/')[1];
+      const file = new File([blob], `referencia-caneca-v${version.version}.${extension}`, { type: blob.type });
+      if (restoreRequestRef.current === requestId) setReference(file);
+    } catch {
+      if (restoreRequestRef.current === requestId) {
+        setNotice(`Configuração da versão ${version.version} restaurada. Não foi possível recuperar a imagem usada como referência; selecione-a novamente antes de gerar.`);
+      }
+    } finally {
+      if (restoreRequestRef.current === requestId) setRestoringReference(false);
+    }
   }
 
   async function refreshHistory() {
@@ -212,7 +303,11 @@ export function StudioPage({ client }: StudioPageProps) {
         setHistory(items);
         if (items[0] && !skipInitialAutoOpenRef.current) {
           const latest = await callStudio(client, { action: 'load', jobId: items[0].projectId }) as Job;
-          if (active && !skipInitialAutoOpenRef.current) acceptJob(latest, true);
+          if (active && !skipInitialAutoOpenRef.current) {
+            acceptJob(latest, true);
+            const latestVersion = latest.artVersions?.at(-1);
+            if (latestVersion) await restoreConfigurationFromArt(latest, latestVersion);
+          }
         }
       } catch (cause) {
         if (active) setError(errorMessage(cause, 'Não foi possível carregar os projetos salvos.'));
@@ -251,6 +346,7 @@ export function StudioPage({ client }: StudioPageProps) {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (restoringReference) return;
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     const reusedCommands = (reusedConfiguration?.configuration.selectedCommands ?? [])
@@ -284,6 +380,10 @@ export function StudioPage({ client }: StudioPageProps) {
       form.set('selectedCommands', JSON.stringify(commands));
       if (reference) form.set('reference', reference);
       const created = await callStudio(client, form) as Job;
+      restoreRequestRef.current += 1;
+      setRestoringReference(false);
+      setRestoredVersion(null);
+      setRestoredVersionNote(null);
       setLatestVersionSeen(null);
       acceptJob(created, true);
       setNotice('Criação iniciada. Primeiro será gerada uma arte pronta para impressão.');
@@ -308,8 +408,12 @@ export function StudioPage({ client }: StudioPageProps) {
   }
 
   function startNewCreation() {
-    if (busy) return;
+    if (busy || restoringReference) return;
+    restoreRequestRef.current += 1;
     skipInitialAutoOpenRef.current = true;
+    setRestoringReference(false);
+    setRestoredVersion(null);
+    setRestoredVersionNote(null);
     setJob(null);
     setSelectedVersion(null);
     setLatestVersionSeen(null);
@@ -335,13 +439,43 @@ export function StudioPage({ client }: StudioPageProps) {
   async function chooseJob(projectId: string) {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const loaded = await callStudio(client, { action: 'load', jobId: projectId }) as Job;
       setLatestVersionSeen(null);
       acceptJob(loaded, true);
-      setNotice(null);
+      const latestVersion = loaded.artVersions?.at(-1);
+      if (latestVersion) await restoreConfigurationFromArt(loaded, latestVersion);
     } catch (cause) {
       setError(errorMessage(cause, 'Não foi possível abrir o projeto.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function chooseArtVersion(versionNumber: number) {
+    if (!job || busy || restoringReference) return;
+    const selected = job.artVersions.find((item) => item.version === versionNumber);
+    if (!selected) return;
+    setSelectedVersion(versionNumber);
+    setError(null);
+    setNotice(null);
+
+    if (!usesPreviousArtAsReference(selected) && selected.configuration?.creationMode !== 'reference') {
+      await restoreConfigurationFromArt(job, selected);
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const refreshed = await callStudio(client, { action: 'load', jobId: job.projectId }) as Job;
+      const refreshedVersion = refreshed.artVersions.find((item) => item.version === versionNumber);
+      if (!refreshedVersion) throw new Error('studio_job_lookup_failed');
+      acceptJob(refreshed);
+      setSelectedVersion(versionNumber);
+      await restoreConfigurationFromArt(refreshed, refreshedVersion);
+    } catch (cause) {
+      setError(errorMessage(cause, 'Não foi possível recuperar a configuração desta versão.'));
     } finally {
       setBusy(false);
     }
@@ -538,6 +672,7 @@ export function StudioPage({ client }: StudioPageProps) {
   const queuedArt = job?.artVersions.find((version) => version.version === queuedVersion) ?? null;
   const selectedMockups = job?.mockups.filter((asset) => asset.version === selectedVersion) ?? [];
   const selectedIsLatest = chosenArt?.version === job?.artVersions.at(-1)?.version;
+  const restoredConfiguration = job?.artVersions.find((version) => version.version === restoredVersion)?.configuration ?? null;
   const currentSideScales = chosenArt?.configuration?.sizeBySide ?? { left: 100, right: 100 };
   const changedArtSides = (['left', 'right'] as const).filter((side) =>
     Boolean(sideArtworkFiles[side]) || sideScales[side] !== currentSideScales[side]);
@@ -603,7 +738,7 @@ export function StudioPage({ client }: StudioPageProps) {
           <p>Criação, edição e impressão em um fluxo só: gere, ajuste, aprove e prepare cada cópia.</p>
         </div>
         <div className="studio-heading-actions">
-          <button className="studio-submit studio-new-creation" type="button" disabled={busy}
+          <button className="studio-submit studio-new-creation" type="button" disabled={busy || restoringReference}
             aria-label="Iniciar nova criação e limpar a tela" title="Projetos anteriores continuam salvos em Projetos recentes."
             onClick={startNewCreation}>＋ Nova criação</button>
           <span className="studio-private">Sem login</span>
@@ -651,6 +786,7 @@ export function StudioPage({ client }: StudioPageProps) {
                 <label className="studio-field">
                   <span>Imagem de referência</span>
                   <input type="file" accept="image/png,image/jpeg,image/webp"
+                    disabled={busy || restoringReference}
                     onChange={(event) => setReference(event.currentTarget.files?.[0] ?? null)} />
                   <small>PNG, JPEG ou WebP, até 8 MB. O arquivo fica privado.</small>
                   {reference ? <small>Imagem carregada: {reference.name}</small> : null}
@@ -671,6 +807,23 @@ export function StudioPage({ client }: StudioPageProps) {
               </label>
             </section>
 
+            {restoredVersion !== null ? <section className="studio-config-reuse" role="status">
+              <div><strong>Configuração restaurada da versão {restoredVersion}</strong>
+                <p>Lado, descrição, texto exato, tamanho e comandos rápidos foram recuperados do envio original.</p>
+                {restoredVersionNote ? <p><strong>Anotação salva nesta versão:</strong> {restoredVersionNote}</p> : null}
+                {restoringReference ? <small>Recuperando a imagem de referência original…</small> : null}
+                {restoredConfiguration?.selectedCommands?.length ? <ul className="studio-saved-command-list">
+                  {restoredConfiguration.selectedCommands.map((command) => <li key={command.id}>
+                    <strong>{command.title}{command.categoryId ? ` · ${command.categoryId}` : ''}</strong>
+                    <span>{command.instruction}</span>
+                  </li>)}
+                </ul> : null}
+                {restoredConfiguration?.compiledPrompt ? <details className="studio-saved-prompt">
+                  <summary>Ver anotações completas enviadas para gerar esta arte</summary>
+                  <pre>{restoredConfiguration.compiledPrompt}</pre>
+                </details> : null}
+              </div>
+            </section> : null}
             <PromptLibraryPanel
               selectedCommands={selectedQuickCommands}
               onSelectedCommandsChange={setSelectedQuickCommands}
@@ -693,8 +846,8 @@ export function StudioPage({ client }: StudioPageProps) {
             </section> : null}
 
             <section className="studio-card studio-form-action-card">
-              <button className="studio-submit" disabled={busy || Boolean(job && !finished(job.status))} type="submit">
-                {busy ? 'Preparando…' : job && !finished(job.status) ? 'Criação em andamento…' : 'Gerar arte para impressão'}
+              <button className="studio-submit" disabled={busy || restoringReference || Boolean(job && !finished(job.status))} type="submit">
+                {restoringReference ? 'Recuperando referência…' : busy ? 'Preparando…' : job && !finished(job.status) ? 'Criação em andamento…' : 'Gerar arte para impressão'}
               </button>
               <p className="studio-note">Sem login. Limite de 5 ações com OpenAI por IP a cada 24 h. Revisão visual e prévias são opcionais.</p>
             </section>
@@ -736,7 +889,8 @@ export function StudioPage({ client }: StudioPageProps) {
                   {job.artVersions.map((version) => (
                     <button type="button" key={version.version}
                       className={'studio-version-chip' + (version.version === selectedVersion ? ' is-selected' : '')}
-                      onClick={() => setSelectedVersion(version.version)}>
+                      disabled={busy || restoringReference}
+                      onClick={() => void chooseArtVersion(version.version)}>
                       <span>v{version.version}</span><small>{sourceText(version)}</small>
                     </button>
                   ))}

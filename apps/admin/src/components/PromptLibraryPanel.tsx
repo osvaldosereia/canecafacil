@@ -46,14 +46,14 @@ export function PromptLibraryPanel({ selectedCommands, onSelectedCommandsChange 
   }, [library]);
 
   useEffect(() => {
-    const selectedIds = new Set(selectedCommands.map((command) => command.id));
-    const current = library.commands.filter((command) => selectedIds.has(command.id));
-    const changed = current.length !== selectedCommands.length || current.some((command, index) => {
+    const commandsById = new Map(library.commands.map((command) => [command.id, command]));
+    const restored = selectedCommands.map((command) => commandsById.get(command.id) ?? command);
+    const changed = restored.some((command, index) => {
       const selected = selectedCommands[index];
       return !selected || command.title !== selected.title || command.instruction !== selected.instruction ||
         command.categoryId !== selected.categoryId;
     });
-    if (changed) onSelectedCommandsChange(current);
+    if (changed) onSelectedCommandsChange(restored);
   }, [library, onSelectedCommandsChange, selectedCommands]);
 
   const categoryCounts = useMemo(() => {
@@ -85,7 +85,11 @@ export function PromptLibraryPanel({ selectedCommands, onSelectedCommandsChange 
   }
 
   function saveSelection(nextIds: Set<string>) {
-    const nextCommands = library.commands.filter((command) => nextIds.has(command.id));
+    const commandsById = new Map(library.commands.map((command) => [command.id, command]));
+    const selectedById = new Map(selectedCommands.map((command) => [command.id, command]));
+    const nextCommands = [...nextIds]
+      .map((id) => commandsById.get(id) ?? selectedById.get(id))
+      .filter((command): command is QuickPromptCommand => command !== undefined);
     try {
       composePromptNotes('', nextCommands);
       onSelectedCommandsChange(nextCommands);

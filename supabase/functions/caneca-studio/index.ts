@@ -731,9 +731,16 @@ async function jobSnapshot(
   adminClient: AdminClient,
   url: string,
   job: JobRow | null,
+  includeReference = false,
 ): Promise<Record<string, unknown> | null> {
   if (!job) return null;
   const artVersion = latestArt(job);
+  let referenceUrl: string | null = null;
+  if (includeReference && job.reference_path) {
+    const { data, error } = await adminClient.storage.from(BUCKET)
+      .createSignedUrl(job.reference_path, SIGNED_URL_TTL);
+    if (!error && data?.signedUrl) referenceUrl = normalizeSignedUrl(url, data.signedUrl);
+  }
   const artVersions = await Promise.all((Array.isArray(job.art_versions) ? job.art_versions : []).map(async (version) => {
     const { data, error } = await adminClient.storage.from(BUCKET)
       .createSignedUrl(version.path, SIGNED_URL_TTL);
@@ -774,6 +781,7 @@ async function jobSnapshot(
     title: job.title,
     status: job.status,
     generationSide: job.input?.generationSide || "both",
+    referenceUrl,
     processing: job.processing,
     art,
     artVersions,
@@ -983,9 +991,9 @@ async function advanceJob(
           createdAt: new Date().toISOString(),
           generationSide,
           configuration: creationConfiguration(
-            job.input,
+            { ...job.input, creationMode: "reference" },
             prompt,
-            job.input?.creationMode === "reference",
+            true,
             generationSide,
             base.configuration?.sizeBySide || job.input?.sizeBySide || { left: 100, right: 100 },
           ),
@@ -1123,7 +1131,7 @@ async function handleRequest(request: Request): Promise<Response> {
       .limit(1)
       .maybeSingle();
     if (error) return json({ error: "studio_job_lookup_failed" }, 500);
-    const snapshot = await jobSnapshot(adminClient, url, data as JobRow | null);
+    const snapshot = await jobSnapshot(adminClient, url, data as JobRow | null, true);
     return json({ job: snapshot });
   }
 
@@ -1153,7 +1161,7 @@ async function handleRequest(request: Request): Promise<Response> {
     if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
     const job = await getJob(adminClient, body.jobId, sessionId);
     if (!job) return json({ error: "studio_job_not_found" }, 404);
-    return json(await jobSnapshot(adminClient, url, job));
+    return json(await jobSnapshot(adminClient, url, job, true));
   }
 
   if (action === "start") {
