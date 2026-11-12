@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { PromptLibraryPanel } from '../components/PromptLibraryPanel';
+import { composePromptNotes, type QuickPromptCommand } from '../lib/prompt-library';
 import './StudioPage.css';
 
 type Asset = { version: number; url: string };
@@ -133,6 +135,7 @@ export function StudioPage({ client }: StudioPageProps) {
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [latestVersionSeen, setLatestVersionSeen] = useState<number | null>(null);
   const [editInstruction, setEditInstruction] = useState('');
+  const [selectedQuickCommands, setSelectedQuickCommands] = useState<QuickPromptCommand[]>([]);
   const [quantity, setQuantity] = useState('1');
   const [printUrl, setPrintUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -205,19 +208,29 @@ export function StudioPage({ client }: StudioPageProps) {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    let compositionNotes: string;
+    try {
+      compositionNotes = composePromptNotes(String(form.get('compositionNotes') ?? ''), selectedQuickCommands);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Reduza as instruções antes de gerar a arte.');
+      setNotice(null);
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const form = new FormData(formElement);
       form.set('action', 'start');
       form.set('creationMode', mode);
+      form.set('compositionNotes', compositionNotes);
       if (reference) form.set('reference', reference);
       const created = await callStudio(client, form) as Job;
       setLatestVersionSeen(null);
       acceptJob(created, true);
       setNotice('Criação iniciada. Primeiro será gerada uma arte pronta para impressão.');
       formElement.reset();
+      setSelectedQuickCommands([]);
       setReference(null);
       setMode('from_scratch');
       void refreshHistory().catch(() => undefined);
@@ -436,7 +449,14 @@ export function StudioPage({ client }: StudioPageProps) {
               <label className="studio-field"><span>Composição e margens</span>
                 <textarea name="compositionNotes" rows={3} maxLength={1000} placeholder="Posicionamento, equilíbrio, margem ou detalhes" />
               </label>
+            </section>
 
+            <PromptLibraryPanel
+              selectedCommands={selectedQuickCommands}
+              onSelectedCommandsChange={setSelectedQuickCommands}
+            />
+
+            <section className="studio-card studio-form-action-card">
               <button className="studio-submit" disabled={busy || Boolean(job && !finished(job.status))} type="submit">
                 {busy ? 'Preparando…' : job && !finished(job.status) ? 'Criação em andamento…' : 'Gerar arte para impressão'}
               </button>

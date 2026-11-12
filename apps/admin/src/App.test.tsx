@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from './App';
+import { StudioPage } from './pages/StudioPage';
 
 describe('App', () => {
   it('identifica o painel como Caneca Fácil quando ainda não há cliente configurado', () => {
@@ -29,5 +30,17 @@ describe('App', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it('mostra a biblioteca de comandos rápidos dentro do fluxo de criação sem login', () => {
+    const client = {} as SupabaseClient;
+    const html = renderToStaticMarkup(<StudioPage client={client} />);
+
+    expect(html).toContain('Comandos rápidos');
+    expect(html).toContain('Todas (16)');
+    expect(html).toContain('Composição panorâmica');
+    expect(html).toContain('Categorias (5)');
+    expect(html.indexOf('Comandos rápidos')).toBeLessThan(html.indexOf('Gerar arte para impressão'));
+    expect(html).not.toContain('Entrar no Caneca Fácil');
   });
 });
