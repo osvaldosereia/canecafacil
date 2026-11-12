@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { corsHeaders as supabaseCorsHeaders } from "@supabase/supabase-js/cors";
 
 const TABLE = "caneca_studio_jobs";
@@ -11,6 +11,7 @@ const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 const PUBLIC_APP_ORIGIN = "https://osvaldosereia.github.io";
 const PUBLIC_START_LIMIT = 5;
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+type AdminClient = SupabaseClient<any, "public">;
 const corsHeaders = {
   ...supabaseCorsHeaders,
   "Access-Control-Allow-Origin": PUBLIC_APP_ORIGIN,
@@ -33,6 +34,11 @@ type StudioInput = {
   mandatoryElements: string[];
   forbiddenElements: string[];
   compositionNotes: string | null;
+  latestEditInstruction?: string | null;
+  pendingEdit?: { baseVersion: number; instruction: string } | null;
+  mockupTargetVersion?: number | null;
+  printing?: PrintState;
+  printHistory?: PrintState[];
 };
 type ReferenceImage = { bytes: Uint8Array; fileName: string; mimeType: string };
 type QualityReview = {
@@ -46,8 +52,23 @@ type QualityReview = {
   recommendation: "approve" | "regenerate" | "manual_review";
   concise_note: string;
 };
-type ArtVersion = { version: number; path: string };
+type ArtVersion = {
+  version: number;
+  path: string;
+  source?: "initial" | "operator_edit" | "quality_gate";
+  parentVersion?: number | null;
+  instruction?: string | null;
+  createdAt?: string;
+};
 type MockupAsset = { version: number; side: Side; path: string };
+type PrintState = {
+  approvedVersion: number | null;
+  quantity: number;
+  completed: number;
+  status: "not_queued" | "ready" | "printed";
+  approvedAt?: string | null;
+  reprints: Array<{ version: number; reason: string; createdAt: string }>;
+};
 type JobRow = {
   id: string;
   created_by: string | null;
@@ -64,7 +85,36 @@ type JobRow = {
   validation: QualityReview | null;
   error_code: string | null;
   created_at: string;
+  updated_at: string;
 };
+
+function emptyPrintState(): PrintState {
+  return {
+    approvedVersion: null,
+    quantity: 1,
+    completed: 0,
+    status: "not_queued",
+    reprints: [],
+  };
+}
+
+function printState(input: StudioInput): PrintState {
+  const value = input.printing;
+  if (!value || !Number.isInteger(value.approvedVersion) || !Number.isInteger(value.quantity) ||
+    !Number.isInteger(value.completed) || !Array.isArray(value.reprints)) return emptyPrintState();
+  return value;
+}
+
+function archivePrintState(input: StudioInput): StudioInput {
+  const printing = printState(input);
+  const history = Array.isArray(input.printHistory) ? [...input.printHistory] : [];
+  if (printing.approvedVersion !== null) history.push({ ...printing, reprints: [...printing.reprints] });
+  return { ...input, printing: emptyPrintState(), printHistory: history };
+}
+
+function isValidJobId(value: unknown): value is string {
+  return typeof value === "string" && SESSION_ID_PATTERN.test(value);
+}
 
 function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -151,18 +201,18 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
   };
 }
 
-function serviceClients() {
+function serviceClients(): { url: string; adminClient: AdminClient } {
   const url = Deno.env.get("SUPABASE_URL")?.trim() || "";
   const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")?.trim() || "";
   if (!url || !serviceRole) throw new Error("studio_access_unavailable");
 
-  const adminClient = createClient(url, serviceRole, {
+  const adminClient = createClient<any, "public">(url, serviceRole, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
   return { url, adminClient };
 }
 
-async function resolveOpenAiKey(adminClient: ReturnType<typeof createClient>): Promise<string> {
+async function resolveOpenAiKey(adminClient: AdminClient): Promise<string> {
   const { data, error } = await adminClient.rpc("get_conversation_worker_provider_secret_v1");
   if (error) {
     console.error("[caneca-studio] existing OpenAI provider secret lookup failed");
@@ -171,11 +221,19 @@ async function resolveOpenAiKey(adminClient: ReturnType<typeof createClient>): P
   return typeof data === "string" ? data.trim() : "";
 }
 
-async function authorize(request: Request): Promise<{ sessionId: string; adminClient: ReturnType<typeof createClient>; url: string } | Response> {
+async function authorize(request: Request): Promise<{
+  sessionId: string;
+  userId: string;
+  adminClient: AdminClient;
+  url: string;
+} | Response> {
   const sessionId = request.headers.get("x-studio-session")?.trim() || "";
   if (!SESSION_ID_PATTERN.test(sessionId)) {
     return json({ error: "studio_session_required" }, 400);
   }
+
+  const bearer = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (!bearer) return json({ error: "studio_auth_required" }, 401);
 
   let clients: ReturnType<typeof serviceClients>;
   try {
@@ -184,7 +242,28 @@ async function authorize(request: Request): Promise<{ sessionId: string; adminCl
     return json({ error: "studio_job_lookup_failed" }, 503);
   }
 
-  return { sessionId, adminClient: clients.adminClient, url: clients.url };
+  const { data: authData, error: authError } = await clients.adminClient.auth.getUser(bearer);
+  if (authError || !authData.user) return json({ error: "studio_auth_required" }, 401);
+
+  const { data: membership, error: membershipError } = await clients.adminClient
+    .from("admin_users")
+    .select("role,is_active")
+    .eq("user_id", authData.user.id)
+    .maybeSingle();
+  if (membershipError) {
+    console.error("[caneca-studio] admin membership lookup failed");
+    return json({ error: "studio_access_unavailable" }, 503);
+  }
+  if (!membership?.is_active || !["owner", "operator"].includes(membership.role)) {
+    return json({ error: "studio_admin_required" }, 403);
+  }
+
+  return {
+    sessionId,
+    userId: authData.user.id,
+    adminClient: clients.adminClient,
+    url: clients.url,
+  };
 }
 
 function safeExtension(mimeType: string): string {
@@ -213,6 +292,7 @@ function makeArtPrompt(input: StudioInput): string {
   if (input.mandatoryElements.length) lines.push("Required visual elements: " + input.mandatoryElements.join("; "));
   if (input.forbiddenElements.length) lines.push("Elements to avoid: " + input.forbiddenElements.join("; "));
   if (input.compositionNotes) lines.push("Composition notes: " + input.compositionNotes);
+  if (input.latestEditInstruction) lines.push("Latest requested refinement: " + input.latestEditInstruction);
   lines.push("Create a polished, balanced proposal for human review before production. Do not add watermarks or unrelated lettering.");
   return lines.join("\n");
 }
@@ -313,7 +393,9 @@ async function openAIImage(
     form.set("quality", "medium");
     form.set("output_format", "webp");
     form.set("background", "opaque");
-    form.set("image", new File([image.bytes], image.fileName, { type: image.mimeType }));
+    const imageCopy = new Uint8Array(image.bytes.byteLength);
+    imageCopy.set(image.bytes);
+    form.set("image", new File([imageCopy.buffer as ArrayBuffer], image.fileName, { type: image.mimeType }));
     response = await fetch("https://api.openai.com/v1/images/edits", {
       method: "POST",
       headers: { Authorization: "Bearer " + apiKey },
@@ -368,6 +450,7 @@ async function reviewArtwork(apiKey: string, bytes: Uint8Array, input: StudioInp
     required_elements: input.mandatoryElements,
     forbidden_elements: input.forbiddenElements,
     composition_notes: input.compositionNotes,
+    latest_edit_instruction: input.latestEditInstruction || null,
     canvas: ART_SIZE,
     reference_image_supplied: input.creationMode === "reference",
   };
@@ -429,14 +512,14 @@ function latestArt(job: JobRow): ArtVersion | null {
   return versions.length ? versions[versions.length - 1] : null;
 }
 
-async function downloadPrivate(adminClient: ReturnType<typeof createClient>, path: string): Promise<Uint8Array> {
+async function downloadPrivate(adminClient: AdminClient, path: string): Promise<Uint8Array> {
   const { data, error } = await adminClient.storage.from(BUCKET).download(path);
   if (error || !data) throw new Error("studio_asset_lookup_failed");
   return new Uint8Array(await data.arrayBuffer());
 }
 
 async function uploadPrivate(
-  adminClient: ReturnType<typeof createClient>,
+  adminClient: AdminClient,
   path: string,
   bytes: Uint8Array,
   mimeType: string,
@@ -449,40 +532,49 @@ async function uploadPrivate(
 }
 
 async function writeJob(
-  adminClient: ReturnType<typeof createClient>,
+  adminClient: AdminClient,
   jobId: string,
-  sessionId: string,
+  userId: string,
   patch: Record<string, unknown>,
+  expectedUpdatedAt?: string,
 ): Promise<JobRow> {
-  const { data, error } = await adminClient.from(TABLE)
+  let query = adminClient.from(TABLE)
     .update({ ...patch, processing: false, processing_started_at: null, updated_at: new Date().toISOString() })
     .eq("id", jobId)
-    .eq("guest_session_id", sessionId)
-    .select("*")
-    .single();
+    .eq("created_by", userId);
+  if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
+  const { data, error } = await query.select("*").maybeSingle();
   if (error || !data) throw new Error("studio_job_lookup_failed");
   return data as JobRow;
 }
 
 async function jobSnapshot(
-  adminClient: ReturnType<typeof createClient>,
+  adminClient: AdminClient,
   url: string,
   job: JobRow | null,
 ): Promise<Record<string, unknown> | null> {
   if (!job) return null;
   const artVersion = latestArt(job);
-  let art: { version: number; url: string } | null = null;
-  if (artVersion) {
+  const artVersions = await Promise.all((Array.isArray(job.art_versions) ? job.art_versions : []).map(async (version) => {
     const { data, error } = await adminClient.storage.from(BUCKET)
-      .createSignedUrl(artVersion.path, SIGNED_URL_TTL);
+      .createSignedUrl(version.path, SIGNED_URL_TTL);
     if (error || !data?.signedUrl) throw new Error("studio_job_lookup_failed");
-    art = { version: artVersion.version, url: normalizeSignedUrl(url, data.signedUrl) };
-  }
+    return {
+      version: version.version,
+      source: version.source || "initial",
+      parentVersion: version.parentVersion ?? null,
+      instruction: version.instruction ?? null,
+      createdAt: version.createdAt ?? null,
+      url: normalizeSignedUrl(url, data.signedUrl),
+    };
+  }));
+  const signedLatest = artVersion ? artVersions.find((version) => version.version === artVersion.version) : null;
+  const art = signedLatest ? { version: signedLatest.version, url: signedLatest.url } : null;
   const mockups = await Promise.all((Array.isArray(job.mockups) ? job.mockups : []).map(async (asset) => {
     const { data, error } = await adminClient.storage.from(BUCKET)
       .createSignedUrl(asset.path, SIGNED_URL_TTL);
     if (error || !data?.signedUrl) throw new Error("studio_job_lookup_failed");
-    return { version: asset.version, url: normalizeSignedUrl(url, data.signedUrl) };
+    return { version: asset.version, side: asset.side, url: normalizeSignedUrl(url, data.signedUrl) };
   }));
   return {
     projectId: job.id,
@@ -490,34 +582,38 @@ async function jobSnapshot(
     status: job.status,
     processing: job.processing,
     art,
+    artVersions,
     validation: job.validation,
     mockups,
+    printing: job.input?.printing || emptyPrintState(),
+    printHistory: Array.isArray(job.input?.printHistory) ? job.input.printHistory : [],
+    createdAt: job.created_at,
   };
 }
 
 async function getJob(
-  adminClient: ReturnType<typeof createClient>,
+  adminClient: AdminClient,
   jobId: string,
-  sessionId: string,
+  userId: string,
 ): Promise<JobRow | null> {
   const { data, error } = await adminClient.from(TABLE).select("*")
     .eq("id", jobId)
-    .eq("guest_session_id", sessionId)
+    .eq("created_by", userId)
     .maybeSingle();
   if (error) throw new Error("studio_job_lookup_failed");
   return data as JobRow | null;
 }
 
 async function startJob(
-  adminClient: ReturnType<typeof createClient>,
+  adminClient: AdminClient,
   url: string,
-  sessionId: string,
+  userId: string,
   form: FormData,
 ): Promise<Response> {
   const { input, reference } = await parseInput(form);
   const { data, error } = await adminClient.from(TABLE).insert({
-    created_by: null,
-    guest_session_id: sessionId,
+    created_by: userId,
+    guest_session_id: null,
     title: input.title,
     creation_mode: input.creationMode,
     input,
@@ -558,11 +654,10 @@ async function startJob(
 }
 
 async function advanceJob(
-  adminClient: ReturnType<typeof createClient>,
+  adminClient: AdminClient,
   url: string,
-  sessionId: string,
+  userId: string,
   jobId: string,
-  apiKey: string,
 ): Promise<Response> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
     return json({ error: "studio_job_not_found" }, 404);
@@ -571,24 +666,32 @@ async function advanceJob(
   const { data: claimed, error: claimError } = await adminClient.from(TABLE)
     .update({ processing: true, processing_started_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", jobId)
-    .eq("guest_session_id", sessionId)
+    .eq("created_by", userId)
     .or("processing.eq.false,processing_started_at.lt." + staleBefore)
     .select("*")
     .maybeSingle();
 
   if (claimError) return json({ error: "studio_job_lookup_failed" }, 500);
   if (!claimed) {
-    const current = await getJob(adminClient, jobId, sessionId);
+    const current = await getJob(adminClient, jobId, userId);
     if (!current) return json({ error: "studio_job_not_found" }, 404);
     return json(await jobSnapshot(adminClient, url, current));
   }
 
   const job = claimed as JobRow;
   if (job.status === "needs_review" || job.status === "failed") {
-    return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
+    return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
       status: job.status,
       processing: false,
     })));
+  }
+
+  const apiKey = await resolveOpenAiKey(adminClient);
+  if (!apiKey) {
+    try {
+      await writeJob(adminClient, job.id, userId, { status: job.status, error_code: "openai_provider_secret_unavailable" });
+    } catch { /* The next request can reclaim a stale processing claim. */ }
+    return json({ error: "openai_provider_secret_unavailable" }, 503);
   }
 
   try {
@@ -606,9 +709,9 @@ async function advanceJob(
       const bytes = await openAIImage(apiKey, imagePrompt, ART_SIZE, reference);
       const path = job.id + "/art-v1.webp";
       await uploadPrivate(adminClient, path, bytes, "image/webp");
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
         status: "review_pending",
-        art_versions: [{ version: 1, path }],
+        art_versions: [{ version: 1, path, source: "initial", parentVersion: null, createdAt: new Date().toISOString() }],
         error_code: null,
       })));
     }
@@ -621,14 +724,49 @@ async function advanceJob(
       const shouldCorrect = !validation.approved &&
         validation.recommendation === "regenerate" &&
         job.correction_count < 1;
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
         validation,
-        status: shouldCorrect ? "correction_pending" : "mockup_front_pending",
+        status: shouldCorrect ? "correction_pending" : "needs_review",
         error_code: null,
       })));
     }
 
     if (job.status === "correction_pending") {
+      const versions = Array.isArray(job.art_versions) ? job.art_versions : [];
+      const nextVersion = versions.reduce((max, item) => Math.max(max, item.version), 0) + 1;
+      const pendingEdit = job.input?.pendingEdit;
+      if (pendingEdit) {
+        const base = versions.find((item) => item.version === pendingEdit.baseVersion);
+        if (!base) throw new Error("studio_art_missing");
+        const previous = await downloadPrivate(adminClient, base.path);
+        const prompt = makeArtPrompt(job.input) +
+          "\n\nAJUSTE SOLICITADO PELO OPERADOR: " + pendingEdit.instruction +
+          "\nAplique somente esse ajuste e preserve os demais elementos, proporções e textos da versão de referência.";
+        const bytes = await openAIImage(apiKey, prompt, ART_SIZE, {
+          bytes: previous,
+          fileName: "caneca-facil-arte-v" + base.version + ".webp",
+          mimeType: "image/webp",
+        });
+        const path = job.id + "/art-v" + nextVersion + ".webp";
+        await uploadPrivate(adminClient, path, bytes, "image/webp");
+        const nextInput = { ...job.input, pendingEdit: null };
+        const nextVersions = [...versions, {
+          version: nextVersion,
+          path,
+          source: "operator_edit",
+          parentVersion: base.version,
+          instruction: pendingEdit.instruction,
+          createdAt: new Date().toISOString(),
+        }];
+        return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+          input: nextInput,
+          art_versions: nextVersions,
+          validation: null,
+          status: "review_pending",
+          error_code: null,
+        })));
+      }
+
       const art = latestArt(job);
       if (!art) throw new Error("studio_art_missing");
       const previous = await downloadPrivate(adminClient, art.path);
@@ -644,12 +782,19 @@ async function advanceJob(
         fileName: "caneca-facil-arte-v" + art.version + ".webp",
         mimeType: "image/webp",
       });
-      const path = job.id + "/art-v2.webp";
+      const path = job.id + "/art-v" + nextVersion + ".webp";
       await uploadPrivate(adminClient, path, bytes, "image/webp");
-      const versions = [...(Array.isArray(job.art_versions) ? job.art_versions : []), { version: 2, path }];
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
-        art_versions: versions,
-        correction_count: 1,
+      const nextVersions = [...versions, {
+        version: nextVersion,
+        path,
+        source: "quality_gate",
+        parentVersion: art.version,
+        instruction: corrections,
+        createdAt: new Date().toISOString(),
+      }];
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+        art_versions: nextVersions,
+        correction_count: Math.min(1, job.correction_count + 1),
         status: "review_pending",
         error_code: null,
       })));
@@ -657,7 +802,9 @@ async function advanceJob(
 
     if (job.status === "mockup_front_pending" || job.status === "mockup_back_pending") {
       const side: Side = job.status === "mockup_front_pending" ? "front" : "back";
-      const art = latestArt(job);
+      const targetVersion = job.input?.mockupTargetVersion;
+      const art = (Array.isArray(job.art_versions) ? job.art_versions : [])
+        .find((item) => item.version === targetVersion) || latestArt(job);
       if (!art) throw new Error("studio_art_missing");
       const artBytes = await downloadPrivate(adminClient, art.path);
       const bytes = await openAIImage(apiKey, makeMockupPrompt(side, job.input), "1024x1024", {
@@ -665,14 +812,15 @@ async function advanceJob(
         fileName: "caneca-facil-arte.webp",
         mimeType: "image/webp",
       });
-      const version = side === "front" ? 1 : 2;
-      const path = job.id + "/mockup-v" + version + ".webp";
+      const version = art.version;
+      const path = job.id + "/mockup-v" + version + "-" + side + "-" + Date.now() + ".webp";
       await uploadPrivate(adminClient, path, bytes, "image/webp");
       const mockups = [...(Array.isArray(job.mockups) ? job.mockups : []), { version, side, path }];
       const isLast = side === "back";
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
         mockups,
         status: isLast ? "needs_review" : "mockup_back_pending",
+        input: isLast ? { ...job.input, mockupTargetVersion: null } : job.input,
         error_code: null,
       })));
     }
@@ -681,7 +829,7 @@ async function advanceJob(
   } catch {
     console.error("[caneca-studio] generation step failed", { jobId: job.id, status: job.status });
     try {
-      const failed = await writeJob(adminClient, job.id, sessionId, {
+      const failed = await writeJob(adminClient, job.id, userId, {
         status: "failed",
         error_code: "studio_job_step_failed",
       });
@@ -695,7 +843,7 @@ async function advanceJob(
 type PublicRateDecision = "allowed" | "limited" | "unavailable";
 
 async function checkPublicStartLimit(
-  adminClient: ReturnType<typeof createClient>,
+  adminClient: AdminClient,
   request: Request,
 ): Promise<PublicRateDecision> {
   const clientIp = request.headers.get("cf-connecting-ip")?.trim();
@@ -730,7 +878,7 @@ async function handleRequest(request: Request): Promise<Response> {
 
   const authorization = await authorize(request);
   if (authorization instanceof Response) return authorization;
-  const { sessionId, adminClient, url } = authorization;
+  const { userId, adminClient, url } = authorization;
 
   const contentType = request.headers.get("content-type") || "";
   let action: string | null = null;
@@ -750,7 +898,7 @@ async function handleRequest(request: Request): Promise<Response> {
 
   if (action === "latest") {
     const { data, error } = await adminClient.from(TABLE).select("*")
-      .eq("guest_session_id", sessionId)
+      .eq("created_by", userId)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -759,13 +907,41 @@ async function handleRequest(request: Request): Promise<Response> {
     return json({ job: snapshot });
   }
 
+  if (action === "history") {
+    const { data, error } = await adminClient.from(TABLE)
+      .select("id,title,status,created_at,updated_at,art_versions")
+      .eq("created_by", userId)
+      .order("updated_at", { ascending: false })
+      .limit(20);
+    if (error) return json({ error: "studio_job_lookup_failed" }, 500);
+    const jobs = (data || []).map((row) => {
+      const versions = Array.isArray(row.art_versions) ? row.art_versions as ArtVersion[] : [];
+      return {
+        projectId: row.id,
+        title: row.title,
+        status: row.status,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        latestVersion: versions.at(-1)?.version || null,
+      };
+    });
+    return json({ jobs });
+  }
+
+  if (action === "load") {
+    if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
+    const job = await getJob(adminClient, body.jobId, userId);
+    if (!job) return json({ error: "studio_job_not_found" }, 404);
+    return json(await jobSnapshot(adminClient, url, job));
+  }
+
   if (action === "start") {
     if (!form) return json({ error: "invalid_studio_input" }, 400);
     const rateDecision = await checkPublicStartLimit(adminClient, request);
     if (rateDecision === "limited") return json({ error: "studio_rate_limited" }, 429);
     if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
     try {
-      return await startJob(adminClient, url, sessionId, form);
+      return await startJob(adminClient, url, userId, form);
     } catch (error) {
       if (error instanceof Error && error.message === "invalid_studio_input") {
         return json({ error: "invalid_studio_input" }, 400);
@@ -775,11 +951,135 @@ async function handleRequest(request: Request): Promise<Response> {
     }
   }
 
+  if (action === "edit") {
+    if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
+    const version = Number(body.version);
+    const instruction = typeof body.instruction === "string" ? body.instruction.trim() : "";
+    if (!Number.isInteger(version) || version < 1 || instruction.length < 3 || instruction.length > 800) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    const job = await getJob(adminClient, body.jobId, userId);
+    if (!job) return json({ error: "studio_job_not_found" }, 404);
+    const versions = Array.isArray(job.art_versions) ? job.art_versions : [];
+    if (!versions.some((item) => item.version === version) || job.status !== "needs_review" || job.processing) {
+      return json({ error: "studio_job_conflict" }, 409);
+    }
+    const rateDecision = await checkPublicStartLimit(adminClient, request);
+    if (rateDecision === "limited") return json({ error: "studio_rate_limited" }, 429);
+    if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
+
+    try {
+      const nextInput = archivePrintState(job.input);
+      nextInput.pendingEdit = { baseVersion: version, instruction };
+      nextInput.latestEditInstruction = instruction;
+      const updated = await writeJob(adminClient, job.id, userId, {
+        input: nextInput,
+        validation: null,
+        mockups: [],
+        status: "correction_pending",
+        error_code: null,
+      }, job.updated_at);
+      const oldMockups = Array.isArray(job.mockups) ? job.mockups.map((asset) => asset.path) : [];
+      if (oldMockups.length) await adminClient.storage.from(BUCKET).remove(oldMockups);
+      return json(await jobSnapshot(adminClient, url, updated), 202);
+    } catch {
+      return json({ error: "studio_job_conflict" }, 409);
+    }
+  }
+
+  if (action === "mockups") {
+    if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
+    const version = Number(body.version);
+    const job = await getJob(adminClient, body.jobId, userId);
+    if (!job) return json({ error: "studio_job_not_found" }, 404);
+    const versions = Array.isArray(job.art_versions) ? job.art_versions : [];
+    if (!Number.isInteger(version) || !versions.some((item) => item.version === version) ||
+      job.status !== "needs_review" || job.processing) return json({ error: "studio_job_conflict" }, 409);
+    const rateDecision = await checkPublicStartLimit(adminClient, request);
+    if (rateDecision === "limited") return json({ error: "studio_rate_limited" }, 429);
+    if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
+
+    try {
+      const removed = (Array.isArray(job.mockups) ? job.mockups : [])
+        .filter((asset) => asset.version === version).map((asset) => asset.path);
+      const updated = await writeJob(adminClient, job.id, userId, {
+        input: { ...job.input, mockupTargetVersion: version },
+        mockups: (Array.isArray(job.mockups) ? job.mockups : []).filter((asset) => asset.version !== version),
+        status: "mockup_front_pending",
+        error_code: null,
+      }, job.updated_at);
+      if (removed.length) await adminClient.storage.from(BUCKET).remove(removed);
+      return json(await jobSnapshot(adminClient, url, updated), 202);
+    } catch {
+      return json({ error: "studio_job_conflict" }, 409);
+    }
+  }
+
+  if (action === "approve") {
+    if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
+    const version = Number(body.version);
+    const quantity = Number(body.quantity);
+    if (!Number.isInteger(version) || version < 1 || !Number.isInteger(quantity) || quantity < 1 || quantity > 500) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    const job = await getJob(adminClient, body.jobId, userId);
+    if (!job) return json({ error: "studio_job_not_found" }, 404);
+    const versions = Array.isArray(job.art_versions) ? job.art_versions : [];
+    if (!versions.some((item) => item.version === version) || job.status !== "needs_review" || job.processing) {
+      return json({ error: "studio_job_conflict" }, 409);
+    }
+    const nextInput = archivePrintState(job.input);
+    nextInput.printing = {
+      approvedVersion: version,
+      quantity,
+      completed: 0,
+      status: "ready",
+      approvedAt: new Date().toISOString(),
+      reprints: [],
+    };
+    try {
+      const updated = await writeJob(adminClient, job.id, userId, { input: nextInput }, job.updated_at);
+      return json(await jobSnapshot(adminClient, url, updated));
+    } catch {
+      return json({ error: "studio_job_conflict" }, 409);
+    }
+  }
+
+  if (action === "record_print") {
+    if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
+    const reprint = body.reprint === true;
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+    if (reprint && (reason.length < 3 || reason.length > 300)) return json({ error: "invalid_studio_input" }, 400);
+    const job = await getJob(adminClient, body.jobId, userId);
+    if (!job) return json({ error: "studio_job_not_found" }, 404);
+    const printing = printState(job.input);
+    if (job.status !== "needs_review" || job.processing || printing.approvedVersion === null ||
+      !Array.isArray(job.art_versions) || !job.art_versions.some((item) => item.version === printing.approvedVersion)) {
+      return json({ error: "studio_print_not_approved" }, 409);
+    }
+    if (!reprint && (printing.status !== "ready" || printing.completed >= printing.quantity)) {
+      return json({ error: "studio_print_quantity_complete" }, 409);
+    }
+    const nextPrinting: PrintState = reprint
+      ? { ...printing, reprints: [...printing.reprints, { version: printing.approvedVersion, reason, createdAt: new Date().toISOString() }] }
+      : {
+        ...printing,
+        completed: printing.completed + 1,
+        status: printing.completed + 1 >= printing.quantity ? "printed" : "ready",
+      };
+    try {
+      const updated = await writeJob(adminClient, job.id, userId, {
+        input: { ...job.input, printing: nextPrinting },
+      }, job.updated_at);
+      return json(await jobSnapshot(adminClient, url, updated));
+    } catch {
+      return json({ error: "studio_job_conflict" }, 409);
+    }
+  }
+
   if (action === "advance") {
-    if (typeof body.jobId !== "string") return json({ error: "studio_job_not_found" }, 404);
-    const apiKey = await resolveOpenAiKey(adminClient);
-    if (!apiKey) return json({ error: "openai_provider_secret_unavailable" }, 503);
-    return await advanceJob(adminClient, url, sessionId, body.jobId, apiKey);
+    if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
+    return await advanceJob(adminClient, url, userId, body.jobId);
   }
 
   return json({ error: "invalid_studio_input" }, 400);

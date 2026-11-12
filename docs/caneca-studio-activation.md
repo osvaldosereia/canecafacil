@@ -1,23 +1,25 @@
-# Ativação do Estúdio de Canecas
+# Caneca 360 — Criação, edição e impressão
 
-O site está no GitHub Pages em [Caneca Fácil](https://osvaldosereia.github.io/canecafacil/), e a automação de arte roda na Edge Function `caneca-studio` do projeto Supabase existente **Dona Antônia** (`ssbesxgaijknwsjbsbcz`). Nenhum projeto Railway ou novo projeto Supabase é usado.
+O estúdio do Caneca Fácil fica no GitHub Pages em [Caneca Fácil](https://osvaldosereia.github.io/canecafacil/). A automação reutiliza a Edge Function `caneca-studio`, a tabela `caneca_studio_jobs` e o bucket privado `caneca-studio-assets` do projeto Supabase existente **Dona Antônia** (`ssbesxgaijknwsjbsbcz`). Não criar outro projeto, tabela ou bucket.
 
-## Acesso direto
+## Acesso e segurança
 
-O Estúdio abre sem cadastro, e-mail ou senha. Cada navegador cria um identificador aleatório para manter os trabalhos separados. A função valida esse identificador, aceita chamadas do domínio do GitHub Pages e limita a criação a cinco trabalhos por endereço IP em 24 horas.
+O GitHub Pages exige uma sessão válida no Admin. A função também valida o JWT, consulta `admin_users` e aceita apenas usuários ativos com papel `owner` ou `operator`. Trabalhos e imagens só são devolvidos ao usuário que os criou. A chave OpenAI permanece no segredo existente e nunca é enviada ao navegador.
 
-Como o acesso é público, qualquer pessoa com o endereço do site pode abrir o formulário. A tabela de trabalhos não fica acessível diretamente pelo navegador: a função usa a credencial interna do Supabase, devolve URLs temporárias para imagens no bucket privado e nunca envia a chave OpenAI ao site.
+## Fluxo de criação
 
-## Automação
+O briefing pode começar do zero ou usar uma referência PNG, JPEG ou WebP de até 8 MB. A geração inicial cria uma arte panorâmica de 2400 × 960 px e revisa texto, composição e margens. Se o Quality Gate pedir uma correção objetiva, a função pode fazer uma correção automática. O operador pode pedir novos ajustes em linguagem natural; cada ajuste cria uma versão imutável e mantém as anteriores no histórico.
 
-O briefing pode começar do zero ou usar uma imagem PNG, JPEG ou WebP de até 8 MB. A função cria a arte panorâmica, faz a revisão visual pelo Quality Gate, pode corrigir uma vez e prepara dois mockups. Os arquivos ficam no bucket privado `caneca-studio-assets`; a interface mostra links assinados temporários para visualização.
+Os dois mockups são opcionais e só são gerados quando solicitados. Eles usam imagens adicionais da API OpenAI e servem como prévia de produto; a impressão usa a arte panorâmica aberta. As imagens ficam no bucket privado e a interface recebe URLs assinadas temporárias.
 
-A função recupera a credencial OpenAI já salva no Vault do projeto por meio da RPC interna `get_conversation_worker_provider_secret_v1`. Os modelos padrão são `gpt-image-2.5-sunburst` para gerar e editar imagens e `gpt-6-astra` para revisar a arte. A chave nunca é gravada no repositório, no HTML ou no navegador.
+## Aprovação e impressão
 
-## Publicação
+O operador escolhe uma versão e aprova a quantidade antes de imprimir. A fila é interna ao Caneca 360: ela não confirma pagamento e não sincroniza pedidos da loja.
 
-O workflow **Deploy Caneca Fácil Studio** compila `apps/admin` no modo Pages e publica em:
+O perfil Epson L1250 usa papel de 106 × 247 mm, área de arte de 235 × 106 mm, rotação de 90° e espelhamento único no arquivo. A imagem usa ajuste proporcional para caber sem corte. Na janela do navegador, selecionar o papel personalizado e escala de 100%; manter o espelhamento desligado no driver. Cada cópia só entra na contagem após confirmação. Reimpressões exigem justificativa.
 
-`https://osvaldosereia.github.io/canecafacil/`
+## Custos e publicação
 
-A origem de Pages deve permanecer **GitHub Actions**. Esse workflow publica somente o site; as migrações e a função ficam versionadas em `supabase/` e são aplicadas separadamente ao projeto existente. Nesta ativação, a migration `20261027214301_caneca_studio_guest_access_v1` e a versão 2 da função já foram aplicadas. Não é necessário criar outro projeto. Gerações consomem a conta OpenAI já conectada e o armazenamento do projeto atual.
+O workflow **Deploy Caneca Fácil Studio** compila `apps/admin` para o modo Pages e publica em `https://osvaldosereia.github.io/canecafacil/`. O deploy da função existente é feito separadamente e não executa migrações.
+
+O projeto Supabase atual já está no plano Pro; esta versão não cria nem contrata recursos adicionais. Chamadas de função, banco e Storage continuam usando as cotas desse projeto e podem contar como uso variável se excederem o que o plano inclui. Geração, edição, correção automática e mockups consomem créditos da API OpenAI. O limite existente é de cinco ações de geração por endereço IP em 24 horas; mockups podem gerar duas imagens em uma ação.
