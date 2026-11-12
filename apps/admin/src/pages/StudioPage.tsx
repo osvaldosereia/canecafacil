@@ -185,6 +185,7 @@ export function StudioPage({ client }: StudioPageProps) {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const printImageRef = useRef<HTMLImageElement>(null);
+  const skipInitialAutoOpenRef = useRef(false);
 
   function acceptJob(next: Job | null, forceLatest = false) {
     setJob(next);
@@ -209,9 +210,9 @@ export function StudioPage({ client }: StudioPageProps) {
         if (!active) return;
         const items = listing.jobs || [];
         setHistory(items);
-        if (items[0]) {
+        if (items[0] && !skipInitialAutoOpenRef.current) {
           const latest = await callStudio(client, { action: 'load', jobId: items[0].projectId }) as Job;
-          if (active) acceptJob(latest, true);
+          if (active && !skipInitialAutoOpenRef.current) acceptJob(latest, true);
         }
       } catch (cause) {
         if (active) setError(errorMessage(cause, 'Não foi possível carregar os projetos salvos.'));
@@ -304,6 +305,31 @@ export function StudioPage({ client }: StudioPageProps) {
     } finally {
       setBusy(false);
     }
+  }
+
+  function startNewCreation() {
+    if (busy) return;
+    skipInitialAutoOpenRef.current = true;
+    setJob(null);
+    setSelectedVersion(null);
+    setLatestVersionSeen(null);
+    setProjectTitle('');
+    setArtDescription('');
+    setMandatoryText('');
+    setMode('from_scratch');
+    setGenerationSide('both');
+    setReference(null);
+    setSideArtworkFiles({ left: null, right: null });
+    setSideScales({ left: 100, right: 100 });
+    setReusedConfiguration(null);
+    setExcludedReusedCommandIds([]);
+    setSelectedQuickCommands([]);
+    setEditInstruction('');
+    setEditSide('both');
+    setQuantity('1');
+    setPrintUrl(null);
+    setNotice(null);
+    setError(null);
   }
 
   async function chooseJob(projectId: string) {
@@ -576,7 +602,12 @@ export function StudioPage({ client }: StudioPageProps) {
           <h1>Caneca 360</h1>
           <p>Criação, edição e impressão em um fluxo só: gere, ajuste, aprove e prepare cada cópia.</p>
         </div>
-        <span className="studio-private">Sem login</span>
+        <div className="studio-heading-actions">
+          <button className="studio-submit studio-new-creation" type="button" disabled={busy}
+            aria-label="Iniciar nova criação e limpar a tela" title="Projetos anteriores continuam salvos em Projetos recentes."
+            onClick={startNewCreation}>＋ Nova criação</button>
+          <span className="studio-private">Sem login</span>
+        </div>
       </header>
 
       {error ? <p className="studio-alert studio-global-message" role="alert">{error}</p> : null}
