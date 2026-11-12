@@ -210,16 +210,6 @@ export function StudioPage({ client }: StudioPageProps) {
   const skipInitialAutoOpenRef = useRef(false);
   const restoreRequestRef = useRef(0);
 
-  function acceptJob(next: Job | null, forceLatest = false) {
-    setJob(next);
-    const newest = next?.artVersions?.at(-1)?.version ?? null;
-    if (forceLatest || (newest !== null && newest !== latestVersionSeen)) {
-      setLatestVersionSeen(newest);
-      setSelectedVersion(newest);
-    }
-    if (next?.printing?.quantity) setQuantity(String(next.printing.quantity));
-  }
-
   async function restoreConfigurationFromArt(sourceJob: Job, version: ArtVersion) {
     const requestId = ++restoreRequestRef.current;
     const configuration = version.configuration;
@@ -260,12 +250,25 @@ export function StudioPage({ client }: StudioPageProps) {
     setSelectedQuickCommands(commands);
 
     if (!needsReference) return;
-    const referenceUrl = previousArtIsReference
+    let referenceUrl = previousArtIsReference
       ? sourceJob.artVersions.find((item) => item.version === version.parentVersion)?.url
       : sourceJob.referenceUrl;
     if (!referenceUrl) {
-      setNotice(`Configuração da versão ${version.version} restaurada. A imagem usada como referência não está disponível; selecione-a novamente antes de gerar.`);
-      return;
+      setRestoringReference(true);
+      try {
+        const refreshed = await callStudio(client, { action: 'load', jobId: sourceJob.projectId }) as Job;
+        if (restoreRequestRef.current !== requestId) return;
+        referenceUrl = previousArtIsReference
+          ? refreshed.artVersions.find((item) => item.version === version.parentVersion)?.url
+          : refreshed.referenceUrl;
+      } catch { /* Fall through to the re-upload message when the saved file cannot be recovered. */ }
+      if (!referenceUrl) {
+        if (restoreRequestRef.current === requestId) {
+          setRestoringReference(false);
+          setNotice(`Configuração da versão ${version.version} restaurada. A imagem usada como referência não está disponível; selecione-a novamente antes de gerar.`);
+        }
+        return;
+      }
     }
 
     setRestoringReference(true);
@@ -288,6 +291,18 @@ export function StudioPage({ client }: StudioPageProps) {
     }
   }
 
+  function acceptJob(next: Job | null, forceLatest = false) {
+    setJob(next);
+    const newest = next?.artVersions?.at(-1)?.version ?? null;
+    if (forceLatest || (newest !== null && newest !== latestVersionSeen)) {
+      setLatestVersionSeen(newest);
+      setSelectedVersion(newest);
+      const latestArt = next?.artVersions?.at(-1);
+      if (next && latestArt) void restoreConfigurationFromArt(next, latestArt);
+    }
+    if (next?.printing?.quantity) setQuantity(String(next.printing.quantity));
+  }
+
   async function refreshHistory() {
     const result = await callStudio(client, { action: 'history' }) as { jobs?: HistoryItem[] };
     setHistory(result.jobs || []);
@@ -305,8 +320,6 @@ export function StudioPage({ client }: StudioPageProps) {
           const latest = await callStudio(client, { action: 'load', jobId: items[0].projectId }) as Job;
           if (active && !skipInitialAutoOpenRef.current) {
             acceptJob(latest, true);
-            const latestVersion = latest.artVersions?.at(-1);
-            if (latestVersion) await restoreConfigurationFromArt(latest, latestVersion);
           }
         }
       } catch (cause) {
@@ -444,8 +457,6 @@ export function StudioPage({ client }: StudioPageProps) {
       const loaded = await callStudio(client, { action: 'load', jobId: projectId }) as Job;
       setLatestVersionSeen(null);
       acceptJob(loaded, true);
-      const latestVersion = loaded.artVersions?.at(-1);
-      if (latestVersion) await restoreConfigurationFromArt(loaded, latestVersion);
     } catch (cause) {
       setError(errorMessage(cause, 'Não foi possível abrir o projeto.'));
     } finally {
@@ -811,7 +822,7 @@ export function StudioPage({ client }: StudioPageProps) {
               <div><strong>Configuração restaurada da versão {restoredVersion}</strong>
                 <p>Lado, descrição, texto exato, tamanho e comandos rápidos foram recuperados do envio original.</p>
                 {restoredVersionNote ? <p><strong>Anotação salva nesta versão:</strong> {restoredVersionNote}</p> : null}
-                {restoringReference ? <small>Recuperando a imagem de referência original…</small> : null}
+                {restoringReference ? <small>Recuperando a imagem usada como referência…</small> : null}
                 {restoredConfiguration?.selectedCommands?.length ? <ul className="studio-saved-command-list">
                   {restoredConfiguration.selectedCommands.map((command) => <li key={command.id}>
                     <strong>{command.title}{command.categoryId ? ` · ${command.categoryId}` : ''}</strong>
@@ -909,9 +920,9 @@ export function StudioPage({ client }: StudioPageProps) {
                     <p>{chosenArt.configuration.selectedCommands.length} comando(s) · {chosenArt.configuration.imageModel} · qualidade {chosenArt.configuration.imageQuality}</p></div></div>
                   <details>
                     <summary>Ver todos os dados usados nesta criação</summary>
-                    <p><strong>Modo:</strong> {chosenArt.configuration.creationMode === 'reference' ? 'com referência' : 'do zero'} · <strong>Lado:</strong> {sideText(chosenArt.configuration.generationSide)}</p>
+                    <p><strong>Modo:</strong> {usesPreviousArtAsReference(chosenArt) ? `com a arte-base v${chosenArt.parentVersion}` : chosenArt.configuration.creationMode === 'reference' ? 'com referência' : 'do zero'} · <strong>Lado:</strong> {sideText(chosenArt.configuration.generationSide)}</p>
                     <p><strong>Tamanho por lado:</strong> esquerda {chosenArt.configuration.sizeBySide.left}% · direita {chosenArt.configuration.sizeBySide.right}%</p>
-                    <p><strong>Imagem de referência usada:</strong> {chosenArt.configuration.referenceUsed ? 'sim' : 'não'}</p>
+                    <p><strong>Imagem de referência usada:</strong> {chosenArt.configuration.referenceUsed || usesPreviousArtAsReference(chosenArt) ? 'sim' : 'não'}</p>
                     <div><strong>Comandos rápidos:</strong>{chosenArt.configuration.selectedCommands.length
                       ? <ul className="studio-saved-command-list">{chosenArt.configuration.selectedCommands.map((command) => <li key={command.id}>
                         <strong>{command.title}{command.categoryId ? ` · categoria ${command.categoryId}` : ''}</strong>
