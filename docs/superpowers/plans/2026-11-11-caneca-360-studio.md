@@ -4,7 +4,7 @@
 
 **Goal:** Add secure artwork editing, approval, history, and Epson print production to the existing Caneca 360 Studio.
 
-**Architecture:** Keep the GitHub Pages React app and the existing Supabase Edge Function. Authenticate through the existing Admin AuthGate, validate the JWT and active admin membership in the function, and store version/print metadata in existing JSONB fields and private Storage. Do not add Supabase resources; make mockups opt-in.
+**Architecture:** Keep the GitHub Pages React app and the existing Supabase Edge Function. Make the Studio password-free, scope work to the browser's random session UUID, enforce the existing IP generation limit, and store version/print metadata in existing JSONB fields and private Storage. Do not add Supabase resources; make mockups opt-in.
 
 **Tech Stack:** React 19, TypeScript, Vite, Supabase JS/Edge Functions (Deno), CSS print media.
 
@@ -12,33 +12,34 @@
 
 ## File Structure
 
-- Modify `apps/admin/src/App.tsx`: gate studio-only Pages build with existing AuthGate.
+- Modify `apps/admin/src/App.tsx`: keep the standalone Studio public while preserving AuthGate on the separate Admin workspace.
 - Modify `apps/admin/src/pages/StudioPage.tsx`: briefing, version selection, editing, approval, history, queue, optional mockups.
 - Modify `apps/admin/src/pages/StudioPage.css`: desktop/mobile views and Epson print layout.
-- Modify `supabase/functions/caneca-studio/index.ts`: JWT/admin authorization, owner-scoped history, version edit, approval, optional mockups, print counters.
-- Modify `.github/workflows/deploy-studio.yml`: keep Pages build in studio-only mode; function verification is deployed separately with JWT required.
+- Modify `supabase/functions/caneca-studio/index.ts`: browser-session scoping, IP generation limit, version edit, approval, optional mockups, print counters.
+- Modify `.github/workflows/deploy-studio.yml`: keep Pages build in studio-only mode; deploy the function separately with JWT gateway verification disabled because the endpoint is intentionally public and has its own session/IP checks.
 - No migration or new Supabase resource.
 
 ## Global Constraints
 
 - Keep current image output at 2400 × 960 px.
 - Do not place the OpenAI secret in the browser.
-- Keep the project restricted to active `owner` or `operator` accounts.
+- Do not show a login or password screen in the standalone Studio.
+- Keep the existing five-actions-per-IP-per-24-hours generation limit in front of every image-producing action.
 - Never overwrite an existing artwork version.
 - Do not generate mockups automatically.
 - Use 106 × 247 mm paper, a 235 × 106 mm art area, 100% scaling, one mirror, and one 90° rotation.
 
 ## Tasks
 
-### Task 1: Protect the studio and its OpenAI endpoint
+### Task 1: Open the studio without login and limit generation
 
 **Files:** `apps/admin/src/App.tsx`, `supabase/functions/caneca-studio/index.ts`
 
-- [x] Wrap studio-only rendering in `AuthGate`.
-- [x] Validate the bearer JWT with Supabase Auth and require an active owner/operator row in `admin_users`.
-- [x] Set new jobs' `created_by` to the authenticated user and scope reads/updates to that user.
-- [x] Deploy the existing function with JWT verification enabled.
-- [x] Verify typechecking and the Pages production bundle build. (The live login view awaits the Pages deployment.)
+- [x] Open the studio-only Pages build without `AuthGate`; keep the full Admin workspace gated.
+- [x] Scope jobs to the browser's random session UUID, with `created_by` left null as required by the existing guest-job constraint.
+- [x] Retain the IP rate limit before any OpenAI key read or generation action.
+- [x] Deploy the existing function with gateway JWT verification disabled; validate the random browser session and apply the existing IP generation limit in the function.
+- [ ] Verify the live Pages site opens directly to the studio form without login.
 
 ### Task 2: Add immutable revisions and explicit approvals
 
@@ -47,7 +48,7 @@
 - [x] Return signed URLs and metadata for saved art versions.
 - [x] Add an `edit` action that validates a selected base version and short written instruction, uses OpenAI image editing, and appends a new version.
 - [x] Reset prior approval and mockups whenever a new version is added.
-- [x] Add a `history` action scoped to the signed-in user and an `approve` action that records the exact version and requested quantity in the existing `input` JSON.
+- [x] Add a `history` action scoped to the browser session and an `approve` action that records the exact version and requested quantity in the existing `input` JSON.
 - [x] Verify typechecking and production build.
 
 ### Task 3: Add production queue and print tracking
