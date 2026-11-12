@@ -4,7 +4,7 @@ O estúdio do Caneca Fácil fica no GitHub Pages em [Caneca Fácil](https://osva
 
 ## Acesso e segurança
 
-O GitHub Pages exige uma sessão válida no Admin. A função também valida o JWT, consulta `admin_users` e aceita apenas usuários ativos com papel `owner` ou `operator`. Trabalhos e imagens só são devolvidos ao usuário que os criou. A chave OpenAI permanece no segredo existente e nunca é enviada ao navegador.
+O Caneca 360 abre sem login, e-mail ou senha. Cada navegador cria um UUID aleatório e só consegue listar e abrir os trabalhos vinculados a esse UUID. A função aceita chamadas da origem GitHub Pages, valida o UUID e aplica o limite de cinco ações de geração por endereço IP em 24 horas antes de ler a chave OpenAI. O gateway JWT fica desligado para permitir acesso anônimo; a chave OpenAI continua no segredo existente e nunca é enviada ao navegador.
 
 ## Fluxo de criação
 
@@ -22,4 +22,4 @@ O perfil Epson L1250 usa papel de 106 × 247 mm, área de arte de 235 × 106 mm,
 
 O workflow **Deploy Caneca Fácil Studio** compila `apps/admin` para o modo Pages e publica em `https://osvaldosereia.github.io/canecafacil/`. O deploy da função existente é feito separadamente e não executa migrações.
 
-O projeto Supabase atual já está no plano Pro; esta versão não cria nem contrata recursos adicionais. Chamadas de função, banco e Storage continuam usando as cotas desse projeto e podem contar como uso variável se excederem o que o plano inclui. Geração, edição, correção automática e mockups consomem créditos da API OpenAI. O limite existente é de cinco ações de geração por endereço IP em 24 horas; mockups podem gerar duas imagens em uma ação.
+O projeto Supabase atual já está no plano Pro; esta versão não cria nem contrata recursos adicionais. Chamadas de função, banco e Storage continuam usando as cotas desse projeto e podem contar como uso variável se excederem o que o plano inclui. Geração, edição, correção automática e mockups consomem créditos da API OpenAI. O limite é de cinco ações de geração por endereço IP em 24 horas; mockups podem gerar duas imagens em uma ação. Como o estúdio é público, esse limite não impede que alguém abra o site; ele limita os pedidos de geração.

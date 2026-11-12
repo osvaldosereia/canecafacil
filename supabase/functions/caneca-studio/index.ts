@@ -223,7 +223,6 @@ async function resolveOpenAiKey(adminClient: AdminClient): Promise<string> {
 
 async function authorize(request: Request): Promise<{
   sessionId: string;
-  userId: string;
   adminClient: AdminClient;
   url: string;
 } | Response> {
@@ -232,9 +231,6 @@ async function authorize(request: Request): Promise<{
     return json({ error: "studio_session_required" }, 400);
   }
 
-  const bearer = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-  if (!bearer) return json({ error: "studio_auth_required" }, 401);
-
   let clients: ReturnType<typeof serviceClients>;
   try {
     clients = serviceClients();
@@ -242,25 +238,8 @@ async function authorize(request: Request): Promise<{
     return json({ error: "studio_job_lookup_failed" }, 503);
   }
 
-  const { data: authData, error: authError } = await clients.adminClient.auth.getUser(bearer);
-  if (authError || !authData.user) return json({ error: "studio_auth_required" }, 401);
-
-  const { data: membership, error: membershipError } = await clients.adminClient
-    .from("admin_users")
-    .select("role,is_active")
-    .eq("user_id", authData.user.id)
-    .maybeSingle();
-  if (membershipError) {
-    console.error("[caneca-studio] admin membership lookup failed");
-    return json({ error: "studio_access_unavailable" }, 503);
-  }
-  if (!membership?.is_active || !["owner", "operator"].includes(membership.role)) {
-    return json({ error: "studio_admin_required" }, 403);
-  }
-
   return {
     sessionId,
-    userId: authData.user.id,
     adminClient: clients.adminClient,
     url: clients.url,
   };
@@ -534,14 +513,15 @@ async function uploadPrivate(
 async function writeJob(
   adminClient: AdminClient,
   jobId: string,
-  userId: string,
+  sessionId: string,
   patch: Record<string, unknown>,
   expectedUpdatedAt?: string,
 ): Promise<JobRow> {
   let query = adminClient.from(TABLE)
     .update({ ...patch, processing: false, processing_started_at: null, updated_at: new Date().toISOString() })
     .eq("id", jobId)
-    .eq("created_by", userId);
+    .eq("guest_session_id", sessionId)
+    .is("created_by", null);
   if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
   const { data, error } = await query.select("*").maybeSingle();
   if (error || !data) throw new Error("studio_job_lookup_failed");
@@ -594,11 +574,12 @@ async function jobSnapshot(
 async function getJob(
   adminClient: AdminClient,
   jobId: string,
-  userId: string,
+  sessionId: string,
 ): Promise<JobRow | null> {
   const { data, error } = await adminClient.from(TABLE).select("*")
     .eq("id", jobId)
-    .eq("created_by", userId)
+    .eq("guest_session_id", sessionId)
+    .is("created_by", null)
     .maybeSingle();
   if (error) throw new Error("studio_job_lookup_failed");
   return data as JobRow | null;
@@ -607,13 +588,13 @@ async function getJob(
 async function startJob(
   adminClient: AdminClient,
   url: string,
-  userId: string,
+  sessionId: string,
   form: FormData,
 ): Promise<Response> {
   const { input, reference } = await parseInput(form);
   const { data, error } = await adminClient.from(TABLE).insert({
-    created_by: userId,
-    guest_session_id: null,
+    created_by: null,
+    guest_session_id: sessionId,
     title: input.title,
     creation_mode: input.creationMode,
     input,
@@ -656,7 +637,7 @@ async function startJob(
 async function advanceJob(
   adminClient: AdminClient,
   url: string,
-  userId: string,
+  sessionId: string,
   jobId: string,
 ): Promise<Response> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
@@ -666,21 +647,22 @@ async function advanceJob(
   const { data: claimed, error: claimError } = await adminClient.from(TABLE)
     .update({ processing: true, processing_started_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", jobId)
-    .eq("created_by", userId)
+    .eq("guest_session_id", sessionId)
+    .is("created_by", null)
     .or("processing.eq.false,processing_started_at.lt." + staleBefore)
     .select("*")
     .maybeSingle();
 
   if (claimError) return json({ error: "studio_job_lookup_failed" }, 500);
   if (!claimed) {
-    const current = await getJob(adminClient, jobId, userId);
+    const current = await getJob(adminClient, jobId, sessionId);
     if (!current) return json({ error: "studio_job_not_found" }, 404);
     return json(await jobSnapshot(adminClient, url, current));
   }
 
   const job = claimed as JobRow;
   if (job.status === "needs_review" || job.status === "failed") {
-    return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+    return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
       status: job.status,
       processing: false,
     })));
@@ -689,7 +671,7 @@ async function advanceJob(
   const apiKey = await resolveOpenAiKey(adminClient);
   if (!apiKey) {
     try {
-      await writeJob(adminClient, job.id, userId, { status: job.status, error_code: "openai_provider_secret_unavailable" });
+      await writeJob(adminClient, job.id, sessionId, { status: job.status, error_code: "openai_provider_secret_unavailable" });
     } catch { /* The next request can reclaim a stale processing claim. */ }
     return json({ error: "openai_provider_secret_unavailable" }, 503);
   }
@@ -709,7 +691,7 @@ async function advanceJob(
       const bytes = await openAIImage(apiKey, imagePrompt, ART_SIZE, reference);
       const path = job.id + "/art-v1.webp";
       await uploadPrivate(adminClient, path, bytes, "image/webp");
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         status: "review_pending",
         art_versions: [{ version: 1, path, source: "initial", parentVersion: null, createdAt: new Date().toISOString() }],
         error_code: null,
@@ -724,7 +706,7 @@ async function advanceJob(
       const shouldCorrect = !validation.approved &&
         validation.recommendation === "regenerate" &&
         job.correction_count < 1;
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         validation,
         status: shouldCorrect ? "correction_pending" : "needs_review",
         error_code: null,
@@ -758,7 +740,7 @@ async function advanceJob(
           instruction: pendingEdit.instruction,
           createdAt: new Date().toISOString(),
         }];
-        return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+        return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
           input: nextInput,
           art_versions: nextVersions,
           validation: null,
@@ -792,7 +774,7 @@ async function advanceJob(
         instruction: corrections,
         createdAt: new Date().toISOString(),
       }];
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         art_versions: nextVersions,
         correction_count: Math.min(1, job.correction_count + 1),
         status: "review_pending",
@@ -817,7 +799,7 @@ async function advanceJob(
       await uploadPrivate(adminClient, path, bytes, "image/webp");
       const mockups = [...(Array.isArray(job.mockups) ? job.mockups : []), { version, side, path }];
       const isLast = side === "back";
-      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, userId, {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         mockups,
         status: isLast ? "needs_review" : "mockup_back_pending",
         input: isLast ? { ...job.input, mockupTargetVersion: null } : job.input,
@@ -829,7 +811,7 @@ async function advanceJob(
   } catch {
     console.error("[caneca-studio] generation step failed", { jobId: job.id, status: job.status });
     try {
-      const failed = await writeJob(adminClient, job.id, userId, {
+      const failed = await writeJob(adminClient, job.id, sessionId, {
         status: "failed",
         error_code: "studio_job_step_failed",
       });
@@ -878,7 +860,7 @@ async function handleRequest(request: Request): Promise<Response> {
 
   const authorization = await authorize(request);
   if (authorization instanceof Response) return authorization;
-  const { userId, adminClient, url } = authorization;
+  const { sessionId, adminClient, url } = authorization;
 
   const contentType = request.headers.get("content-type") || "";
   let action: string | null = null;
@@ -898,7 +880,8 @@ async function handleRequest(request: Request): Promise<Response> {
 
   if (action === "latest") {
     const { data, error } = await adminClient.from(TABLE).select("*")
-      .eq("created_by", userId)
+      .eq("guest_session_id", sessionId)
+      .is("created_by", null)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -910,7 +893,8 @@ async function handleRequest(request: Request): Promise<Response> {
   if (action === "history") {
     const { data, error } = await adminClient.from(TABLE)
       .select("id,title,status,created_at,updated_at,art_versions")
-      .eq("created_by", userId)
+      .eq("guest_session_id", sessionId)
+      .is("created_by", null)
       .order("updated_at", { ascending: false })
       .limit(20);
     if (error) return json({ error: "studio_job_lookup_failed" }, 500);
@@ -930,7 +914,7 @@ async function handleRequest(request: Request): Promise<Response> {
 
   if (action === "load") {
     if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
-    const job = await getJob(adminClient, body.jobId, userId);
+    const job = await getJob(adminClient, body.jobId, sessionId);
     if (!job) return json({ error: "studio_job_not_found" }, 404);
     return json(await jobSnapshot(adminClient, url, job));
   }
@@ -941,7 +925,7 @@ async function handleRequest(request: Request): Promise<Response> {
     if (rateDecision === "limited") return json({ error: "studio_rate_limited" }, 429);
     if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
     try {
-      return await startJob(adminClient, url, userId, form);
+      return await startJob(adminClient, url, sessionId, form);
     } catch (error) {
       if (error instanceof Error && error.message === "invalid_studio_input") {
         return json({ error: "invalid_studio_input" }, 400);
@@ -958,7 +942,7 @@ async function handleRequest(request: Request): Promise<Response> {
     if (!Number.isInteger(version) || version < 1 || instruction.length < 3 || instruction.length > 800) {
       return json({ error: "invalid_studio_input" }, 400);
     }
-    const job = await getJob(adminClient, body.jobId, userId);
+    const job = await getJob(adminClient, body.jobId, sessionId);
     if (!job) return json({ error: "studio_job_not_found" }, 404);
     const versions = Array.isArray(job.art_versions) ? job.art_versions : [];
     if (!versions.some((item) => item.version === version) || job.status !== "needs_review" || job.processing) {
@@ -972,7 +956,7 @@ async function handleRequest(request: Request): Promise<Response> {
       const nextInput = archivePrintState(job.input);
       nextInput.pendingEdit = { baseVersion: version, instruction };
       nextInput.latestEditInstruction = instruction;
-      const updated = await writeJob(adminClient, job.id, userId, {
+      const updated = await writeJob(adminClient, job.id, sessionId, {
         input: nextInput,
         validation: null,
         mockups: [],
@@ -990,7 +974,7 @@ async function handleRequest(request: Request): Promise<Response> {
   if (action === "mockups") {
     if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
     const version = Number(body.version);
-    const job = await getJob(adminClient, body.jobId, userId);
+    const job = await getJob(adminClient, body.jobId, sessionId);
     if (!job) return json({ error: "studio_job_not_found" }, 404);
     const versions = Array.isArray(job.art_versions) ? job.art_versions : [];
     if (!Number.isInteger(version) || !versions.some((item) => item.version === version) ||
@@ -1002,7 +986,7 @@ async function handleRequest(request: Request): Promise<Response> {
     try {
       const removed = (Array.isArray(job.mockups) ? job.mockups : [])
         .filter((asset) => asset.version === version).map((asset) => asset.path);
-      const updated = await writeJob(adminClient, job.id, userId, {
+      const updated = await writeJob(adminClient, job.id, sessionId, {
         input: { ...job.input, mockupTargetVersion: version },
         mockups: (Array.isArray(job.mockups) ? job.mockups : []).filter((asset) => asset.version !== version),
         status: "mockup_front_pending",
@@ -1022,7 +1006,7 @@ async function handleRequest(request: Request): Promise<Response> {
     if (!Number.isInteger(version) || version < 1 || !Number.isInteger(quantity) || quantity < 1 || quantity > 500) {
       return json({ error: "invalid_studio_input" }, 400);
     }
-    const job = await getJob(adminClient, body.jobId, userId);
+    const job = await getJob(adminClient, body.jobId, sessionId);
     if (!job) return json({ error: "studio_job_not_found" }, 404);
     const versions = Array.isArray(job.art_versions) ? job.art_versions : [];
     if (!versions.some((item) => item.version === version) || job.status !== "needs_review" || job.processing) {
@@ -1038,7 +1022,7 @@ async function handleRequest(request: Request): Promise<Response> {
       reprints: [],
     };
     try {
-      const updated = await writeJob(adminClient, job.id, userId, { input: nextInput }, job.updated_at);
+      const updated = await writeJob(adminClient, job.id, sessionId, { input: nextInput }, job.updated_at);
       return json(await jobSnapshot(adminClient, url, updated));
     } catch {
       return json({ error: "studio_job_conflict" }, 409);
@@ -1050,7 +1034,7 @@ async function handleRequest(request: Request): Promise<Response> {
     const reprint = body.reprint === true;
     const reason = typeof body.reason === "string" ? body.reason.trim() : "";
     if (reprint && (reason.length < 3 || reason.length > 300)) return json({ error: "invalid_studio_input" }, 400);
-    const job = await getJob(adminClient, body.jobId, userId);
+    const job = await getJob(adminClient, body.jobId, sessionId);
     if (!job) return json({ error: "studio_job_not_found" }, 404);
     const printing = printState(job.input);
     if (job.status !== "needs_review" || job.processing || printing.approvedVersion === null ||
@@ -1068,7 +1052,7 @@ async function handleRequest(request: Request): Promise<Response> {
         status: printing.completed + 1 >= printing.quantity ? "printed" : "ready",
       };
     try {
-      const updated = await writeJob(adminClient, job.id, userId, {
+      const updated = await writeJob(adminClient, job.id, sessionId, {
         input: { ...job.input, printing: nextPrinting },
       }, job.updated_at);
       return json(await jobSnapshot(adminClient, url, updated));
@@ -1079,7 +1063,7 @@ async function handleRequest(request: Request): Promise<Response> {
 
   if (action === "advance") {
     if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
-    return await advanceJob(adminClient, url, userId, body.jobId);
+    return await advanceJob(adminClient, url, sessionId, body.jobId);
   }
 
   return json({ error: "invalid_studio_input" }, 400);

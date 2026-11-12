@@ -2,7 +2,7 @@
 
 ## Goal
 
-Turn the existing Caneca Fácil Studio into an owner-only workspace for creating, revising, approving, and printing mug artwork.
+Turn the existing Caneca Fácil Studio into a public, password-free workspace for creating, revising, approving, and printing mug artwork.
 
 ## Product name
 
@@ -12,12 +12,12 @@ Use **Caneca 360** in the studio interface, with the descriptor **Criação, edi
 
 - GitHub Pages hosts the React/Vite studio.
 - The active `caneca-studio` Edge Function uses the existing OpenAI provider secret, `caneca_studio_jobs` table, and private `caneca-studio-assets` bucket.
-- The current studio-only build bypasses the existing Admin AuthGate. The function is deployed without JWT verification and trusts a client-generated session UUID.
+- The studio is intentionally public and does not use Supabase Auth. The browser creates a random session UUID; the function scopes projects to that UUID and limits image-generation actions by client IP.
 - The old workflow supports art versions and written adjustment requests. Its separate Epson L1250 print station freezes an approved art version, prints one mug per click, tracks quantity, and requires a reason for reprints.
 
 ## Behavior
 
-1. Require an active Admin owner or operator session in the browser and again in the Edge Function. A viewer or unauthenticated visitor cannot create, edit, list, or print jobs.
+1. Open directly without an account, e-mail, or password. Keep each browser's projects isolated by its random session UUID, and enforce the existing five generation actions per IP per 24 hours before any OpenAI request.
 2. Generate one print artwork first. Run the existing visual review, but create mockups only after an explicit user action so every creation does not automatically spend on two extra images.
 3. Let the operator submit a written change request against a chosen version. Save each result as a new immutable version, keep previous versions selectable, and clear any mockups tied to an older version.
 4. Require explicit approval of a particular version before adding it to the print queue. Store queue state inside the existing job JSON; do not add a Supabase project, table, bucket, or paid service.
@@ -29,7 +29,7 @@ Use **Caneca 360** in the studio interface, with the descriptor **Criação, edi
 - Reuse the existing Supabase Pro project, function, table, and bucket. Do not create Supabase resources or deploy another service.
 - Supabase function, database, and Storage calls still count against the existing plan quota; the app cannot promise zero variable Supabase usage.
 - Each generated or edited image, optional review, and optional mockup may use OpenAI API credits. Mockups are opt-in.
-- Keep rate limiting and require an authenticated admin before any OpenAI request.
+- Keep rate limiting before any OpenAI request. Because the app is public, never remove or bypass the IP-based generation limit.
 
 ## Out of scope
 
@@ -37,8 +37,8 @@ Use **Caneca 360** in the studio interface, with the descriptor **Criação, edi
 
 ## Acceptance
 
-- The public Pages build shows a login gate instead of the studio form.
-- A non-admin or unsigned Edge Function request is rejected before reading the OpenAI secret or accepting a generation.
+- The public Pages build opens directly to the studio form without a login screen.
+- A request without a valid browser session UUID or within the IP generation limit is rejected before reading the OpenAI secret or accepting a generation.
 - An edit adds a new version without overwriting the previous art.
 - A selected version must be approved before it can be queued or printed.
 - The print preview uses the fixed Epson profile, keeps the art proportional, mirrors exactly once, and tracks completed copies and reprint reasons.

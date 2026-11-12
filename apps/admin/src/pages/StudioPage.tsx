@@ -76,9 +76,6 @@ const statusText: Record<string, string> = {
 };
 const apiErrors: Record<string, string> = {
   studio_session_required: 'Atualize a página e entre novamente.',
-  studio_auth_required: 'Sua sessão expirou. Entre novamente para continuar.',
-  studio_admin_required: 'Sua conta não tem permissão para usar o Caneca 360.',
-  studio_access_unavailable: 'Não foi possível confirmar sua permissão. Tente novamente em instantes.',
   studio_origin_not_allowed: 'Abra o Caneca 360 pelo site do Caneca Fácil.',
   studio_rate_limited: 'Você atingiu o limite de 5 ações de geração em 24 horas. Tente novamente mais tarde.',
   studio_rate_limit_unavailable: 'A proteção de uso está indisponível. Tente novamente em alguns minutos.',
@@ -375,7 +372,7 @@ export function StudioPage({ client }: StudioPageProps) {
           <h1>Caneca 360</h1>
           <p>Criação, edição e impressão em um fluxo só: gere, ajuste, aprove e prepare cada cópia.</p>
         </div>
-        <span className="studio-private">Acesso administrativo</span>
+        <span className="studio-private">Sem login</span>
       </header>
 
       {error ? <p className="studio-alert studio-global-message" role="alert">{error}</p> : null}
@@ -443,7 +440,7 @@ export function StudioPage({ client }: StudioPageProps) {
               <button className="studio-submit" disabled={busy || Boolean(job && !finished(job.status))} type="submit">
                 {busy ? 'Preparando…' : job && !finished(job.status) ? 'Criação em andamento…' : 'Gerar arte para impressão'}
               </button>
-              <p className="studio-note">Gera uma arte primeiro. Mockups são opcionais e só usam OpenAI se você pedir.</p>
+              <p className="studio-note">Sem login. Limite de 5 ações por IP a cada 24 h. Uma correção automática pode gerar outra imagem; os 2 mockups são opcionais.</p>
             </section>
           </form>
 
