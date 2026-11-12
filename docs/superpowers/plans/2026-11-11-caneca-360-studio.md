@@ -30,6 +30,7 @@
 - Scale each side independently from 50% to 150% in 5% steps, without an OpenAI request.
 - Use GPT Image 2.5 Flare at medium quality for generation and GPT-6.1 Terra at low reasoning effort for review.
 - Do not generate mockups automatically.
+- Do not run visual review automatically or regenerate artwork after a review result; further generations require an explicit operator action.
 - Use 106 × 247 mm paper, a 235 × 106 mm art area, 100% scaling, one mirror, and one 90° rotation.
 
 ## Tasks
@@ -83,6 +84,15 @@
 - [x] Adjust left and right side scale independently (50–150%, 5% increments), with uploads and resizing handled locally and the opposite half preserved.
 - [x] Use GPT Image 2.5 Flare at medium quality for faster routine image work, and GPT-6.1 Terra at low reasoning effort for a cheaper visual review.
 - [ ] Confirm published Pages UI exposes the settings card, per-side controls, and reuse flow.
+
+### Task 6: Make visual review explicit and keep generation to one initial image
+
+**Files:** `apps/admin/src/pages/StudioPage.tsx`, `supabase/functions/caneca-studio/index.ts`, this spec
+
+- [x] Finish the initial image at `needs_review` without calling the visual reviewer.
+- [x] Add an explicit review action, apply the existing public action limit, and show the review result without generating a correction.
+- [x] Stop legacy pending automatic reviews and quality-gate corrections after deployment; keep operator-requested edits working.
+- [ ] Confirm the live page shows the optional review button and that the initial workflow stops after one image.
 
 ## Review Focus
 

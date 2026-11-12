@@ -18,7 +18,7 @@ Use **Caneca 360** in the studio interface, with the descriptor **Criação, edi
 ## Behavior
 
 1. Open directly without an account, e-mail, or password. Keep each browser's projects isolated by its random session UUID, and enforce the existing five generation actions per IP per 24 hours before any OpenAI request.
-2. Generate one print artwork first. Run the existing visual review, but create mockups only after an explicit user action so every creation does not automatically spend on two extra images.
+2. Generate only the first print artwork automatically. Do not run visual review or create a mockup unless the operator explicitly requests it. A requested visual review returns findings only and never generates a correction automatically; further artwork is generated only after the operator requests an edit or a new creation.
 3. Let each new artwork target the left half, the right half, or the full wrap. Keep the form focused on a freeform art description and optional exact text; do not ask for occasion, recipient, theme, style, colors, composition/margins, mandatory visual elements, or elements to avoid.
 4. Let the operator upload a finished image separately for the left or right side from the viewer. Fit it inside that half without stretching, preserve the opposite half, and save the result as a new immutable 2400 × 960 print version.
 5. Let the operator submit a written change request against a chosen version and target the left half, right half, or full wrap. For a one-side edit, retain the opposite half from the selected reference. Save each result as a new immutable version, keep previous versions selectable, and clear mockups tied to older versions.
@@ -49,6 +49,7 @@ Use **Caneca 360** in the studio interface, with the descriptor **Criação, edi
 - Initial art can target left, right, or the entire wrap; side uploads add a new print version and preserve the opposite half.
 - The operator can upload or resize each side independently; sizes are retained per version and do not generate OpenAI requests.
 - Every generated, edited, corrected, or uploaded version exposes its saved configuration and can reuse it to prefill the opposite-side creation.
+- The first artwork reaches the review screen without an OpenAI visual-review call; requesting review is explicit and does not generate another artwork version.
 - Editing one side preserves the other side from the selected base version.
 - The left-handle mockup uses the left print half, and the right-handle mockup uses the right print half.
 - A selected version must be approved before it can be queued or printed.

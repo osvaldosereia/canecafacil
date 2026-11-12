@@ -58,6 +58,7 @@ type StudioInput = {
   forbiddenElements?: string[];
   compositionNotes?: string | null;
   latestEditInstruction?: string | null;
+  reviewRequested?: boolean;
   pendingEdit?: { baseVersion: number; instruction: string; side?: GenerationSide } | null;
   mockupTargetVersion?: number | null;
   mockupReferencePaths?: { version: number; leftPath: string; rightPath: string } | null;
@@ -498,7 +499,7 @@ function manualReview(note: string): QualityReview {
     approved: false,
     score: 0,
     blocking_issues: [],
-    warnings: ["A revisão automática não ficou disponível nesta tentativa."],
+    warnings: ["A revisão visual não ficou disponível nesta tentativa."],
     exact_text_ok: null,
     brief_ok: false,
     edges_ok: false,
@@ -541,7 +542,7 @@ function parseQualityReview(text: string): QualityReview {
         : "Confira a arte manualmente antes de produzir.",
     };
   } catch {
-    return manualReview("A revisão automática não retornou um resultado legível. Confira a arte manualmente.");
+    return manualReview("A revisão visual não retornou um resultado legível. Confira a arte manualmente.");
   }
 }
 
@@ -614,8 +615,8 @@ async function openAIImage(
 
 async function reviewArtwork(apiKey: string, bytes: Uint8Array, input: StudioInput): Promise<QualityReview> {
   const reviewerPrompt = [
-    "Você é o Quality Gate visual da CanecaFácil.",
-    "Analise a arte gerada antes de mostrá-la à equipe. Seja rigoroso com erros objetivos, mas não reprove por preferência estética subjetiva.",
+    "Você é o assistente de revisão visual da CanecaFácil. A equipe solicitou esta revisão.",
+    "A arte já está disponível para conferência humana. Seja rigoroso com erros objetivos, mas não reprove por preferência estética subjetiva.",
     "Compare a imagem com a descrição e com o texto exato quando houver. Verifique o formato horizontal para impressão, a correspondência do conteúdo com o lado solicitado, a divisão no centro e erros visuais evidentes.",
     "Não invente detalhes sobre a imagem. Se não conseguir verificar algo, marque como incerto e recomende revisão manual.",
     "Aprovação automática só quando brief_ok e edges_ok forem true, exact_text_ok não for false, e não houver blocking_issues.",
@@ -670,13 +671,13 @@ async function reviewArtwork(apiKey: string, bytes: Uint8Array, input: StudioInp
         status: response.status,
         requestId: response.headers.get("x-request-id"),
       });
-      return manualReview("Não foi possível concluir a revisão automática. Confira a arte manualmente.");
+      return manualReview("Não foi possível concluir a revisão visual. Confira a arte manualmente.");
     }
     const outputText = payload.output_text || payload.output?.flatMap((item) => item.content || [])
       .find((item) => item.type === "output_text")?.text || "";
     return parseQualityReview(outputText);
   } catch {
-    return manualReview("Não foi possível concluir a revisão automática. Confira a arte manualmente.");
+    return manualReview("Não foi possível concluir a revisão visual. Confira a arte manualmente.");
   }
 }
 
@@ -881,8 +882,30 @@ async function advanceJob(
     })));
   }
 
+  if (job.status === "review_pending" && job.input?.reviewRequested !== true) {
+    return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
+      input: { ...job.input, reviewRequested: false },
+      status: "needs_review",
+    })));
+  }
+
+  if (job.status === "correction_pending" && !job.input?.pendingEdit) {
+    return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
+      input: { ...job.input, reviewRequested: false },
+      status: "needs_review",
+    })));
+  }
+
   const apiKey = await resolveOpenAiKey(adminClient);
   if (!apiKey) {
+    if (job.status === "review_pending") {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
+        input: { ...job.input, reviewRequested: false },
+        validation: manualReview("A revisão visual não ficou disponível. Você ainda pode conferir e ajustar a arte manualmente."),
+        status: "needs_review",
+        error_code: "openai_provider_secret_unavailable",
+      })));
+    }
     try {
       await writeJob(adminClient, job.id, sessionId, { status: job.status, error_code: "openai_provider_secret_unavailable" });
     } catch { /* The next request can reclaim a stale processing claim. */ }
@@ -905,7 +928,7 @@ async function advanceJob(
       const path = job.id + "/art-v1.webp";
       await uploadPrivate(adminClient, path, bytes, "image/webp");
       return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
-        status: "review_pending",
+        status: "needs_review",
         art_versions: [{
           version: 1,
           path,
@@ -924,12 +947,10 @@ async function advanceJob(
       if (!art) throw new Error("studio_art_missing");
       const bytes = await downloadPrivate(adminClient, art.path);
       const validation = await reviewArtwork(apiKey, bytes, job.input);
-      const shouldCorrect = !validation.approved &&
-        validation.recommendation === "regenerate" &&
-        job.correction_count < 1;
       return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
+        input: { ...job.input, reviewRequested: false },
         validation,
-        status: shouldCorrect ? "correction_pending" : "needs_review",
+        status: "needs_review",
         error_code: null,
       })));
     }
@@ -973,49 +994,13 @@ async function advanceJob(
           input: nextInput,
           art_versions: nextVersions,
           validation: null,
-          status: "review_pending",
+          status: "needs_review",
           error_code: null,
         })));
       }
-
-      const art = latestArt(job);
-      if (!art) throw new Error("studio_art_missing");
-      const previous = await downloadPrivate(adminClient, art.path);
-      const validation = job.validation;
-      const corrections = validation?.blocking_issues?.length
-        ? validation.blocking_issues.join("; ")
-        : validation?.concise_note || "Corrija os problemas visuais objetivos indicados.";
-      const prompt = makeArtPrompt(job.input) +
-        "\n\nCORREÇÕES DO QUALITY GATE: corrija estes pontos objetivos sem alterar os demais requisitos: " +
-        corrections;
-      const bytes = await openAIImage(apiKey, prompt, ART_SIZE, {
-        bytes: previous,
-        fileName: "caneca-facil-arte-v" + art.version + ".webp",
-        mimeType: "image/webp",
-      });
-      const path = job.id + "/art-v" + nextVersion + ".webp";
-      await uploadPrivate(adminClient, path, bytes, "image/webp");
-      const nextVersions = [...versions, {
-        version: nextVersion,
-        path,
-        source: "quality_gate",
-        parentVersion: art.version,
-        instruction: corrections,
-        createdAt: new Date().toISOString(),
-        generationSide: job.input?.generationSide || "both",
-        configuration: creationConfiguration(
-          job.input,
-          prompt,
-          job.input?.creationMode === "reference",
-          job.input?.generationSide || "both",
-          art.configuration?.sizeBySide || job.input?.sizeBySide || { left: 100, right: 100 },
-        ),
-      }];
       return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
-        art_versions: nextVersions,
-        correction_count: Math.min(1, job.correction_count + 1),
-        status: "review_pending",
-        error_code: null,
+        input: { ...job.input, reviewRequested: false },
+        status: "needs_review",
       })));
     }
 
@@ -1187,6 +1172,29 @@ async function handleRequest(request: Request): Promise<Response> {
     }
   }
 
+  if (action === "review") {
+    if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
+    const job = await getJob(adminClient, body.jobId, sessionId);
+    if (!job) return json({ error: "studio_job_not_found" }, 404);
+    if (job.status !== "needs_review" || job.processing || !latestArt(job)) {
+      return json({ error: "studio_job_conflict" }, 409);
+    }
+    const rateDecision = await checkPublicStartLimit(adminClient, request);
+    if (rateDecision === "limited") return json({ error: "studio_rate_limited" }, 429);
+    if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
+    try {
+      const updated = await writeJob(adminClient, job.id, sessionId, {
+        input: { ...job.input, reviewRequested: true },
+        validation: null,
+        status: "review_pending",
+        error_code: null,
+      }, job.updated_at);
+      return json(await jobSnapshot(adminClient, url, updated), 202);
+    } catch {
+      return json({ error: "studio_job_conflict" }, 409);
+    }
+  }
+
   if (action === "upload_art") {
     if (!form) return json({ error: "invalid_studio_input" }, 400);
     const jobId = readActionText(form, "jobId", 36) || "";
@@ -1325,6 +1333,7 @@ async function handleRequest(request: Request): Promise<Response> {
       nextInput.generationSide = side as GenerationSide;
       nextInput.pendingEdit = { baseVersion: version, instruction, side: side as GenerationSide };
       nextInput.latestEditInstruction = instruction;
+      nextInput.reviewRequested = false;
       const updated = await writeJob(adminClient, job.id, sessionId, {
         input: nextInput,
         validation: null,

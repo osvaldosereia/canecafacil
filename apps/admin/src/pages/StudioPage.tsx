@@ -90,7 +90,7 @@ function getStudioSessionId(): string {
 
 const statusText: Record<string, string> = {
   art_pending: 'Criando a arte para impressão…',
-  review_pending: 'Conferindo texto e composição…',
+  review_pending: 'Executando revisão visual solicitada…',
   correction_pending: 'Aplicando o ajuste solicitado…',
   mockup_front_pending: 'Criando a prévia com a alça à esquerda…',
   mockup_back_pending: 'Criando a prévia com a alça à direita…',
@@ -102,7 +102,7 @@ const statusText: Record<string, string> = {
 const apiErrors: Record<string, string> = {
   studio_session_required: 'Atualize a página e entre novamente.',
   studio_origin_not_allowed: 'Abra o Caneca 360 pelo site do Caneca Fácil.',
-  studio_rate_limited: 'Você atingiu o limite de 5 ações de geração em 24 horas. Tente novamente mais tarde.',
+  studio_rate_limited: 'Você atingiu o limite de 5 ações com OpenAI em 24 horas. Tente novamente mais tarde.',
   studio_rate_limit_unavailable: 'A proteção de uso está indisponível. Tente novamente em alguns minutos.',
   openai_provider_secret_unavailable: 'A conexão OpenAI existente não está disponível.',
   invalid_studio_input: 'Confira os campos e tente novamente.',
@@ -338,6 +338,22 @@ export function StudioPage({ client }: StudioPageProps) {
       void refreshHistory().catch(() => undefined);
     } catch (cause) {
       setError(errorMessage(cause, 'Não foi possível solicitar esse ajuste.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function requestQualityReview() {
+    if (!job || selectedVersion === null || !selectedIsLatest || job.status !== 'needs_review') return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await callStudio(client, { action: 'review', jobId: job.projectId }) as Job;
+      acceptJob(updated);
+      setNotice('Revisão visual solicitada. Ela não gera outra arte automaticamente.');
+    } catch (cause) {
+      setError(errorMessage(cause, 'Não foi possível solicitar a revisão visual.'));
     } finally {
       setBusy(false);
     }
@@ -649,7 +665,7 @@ export function StudioPage({ client }: StudioPageProps) {
               <button className="studio-submit" disabled={busy || Boolean(job && !finished(job.status))} type="submit">
                 {busy ? 'Preparando…' : job && !finished(job.status) ? 'Criação em andamento…' : 'Gerar arte para impressão'}
               </button>
-              <p className="studio-note">Sem login. Limite de 5 ações de geração por IP a cada 24 h. As prévias com a caneca são opcionais.</p>
+              <p className="studio-note">Sem login. Limite de 5 ações com OpenAI por IP a cada 24 h. Revisão visual e prévias são opcionais.</p>
             </section>
           </form>
 
@@ -777,14 +793,23 @@ export function StudioPage({ client }: StudioPageProps) {
                 {job.validation && selectedIsLatest ? (
                   <section className={'studio-quality' + (job.validation.approved ? ' is-approved' : '')} aria-label="Revisão de qualidade da arte">
                     <div className="studio-quality-heading">
-                      <strong>Revisão visual automática · {job.validation.score}/100</strong>
-                      <span>{job.validation.approved ? 'A revisão automática passou; aprove manualmente para imprimir.' : 'Confira a arte com atenção antes de aprovar.'}</span>
+                      <strong>Revisão visual solicitada · {job.validation.score}/100</strong>
+                      <span>{job.validation.approved ? 'A revisão passou; a aprovação para imprimir continua manual.' : 'Confira os apontamentos. A revisão não gera outra arte automaticamente.'}</span>
                     </div>
                     <p>{job.validation.concise_note}</p>
                     {job.validation.blocking_issues.length ? <ul>{job.validation.blocking_issues.map((item, index) => <li key={'issue-' + index}>{item}</li>)}</ul> : null}
                     {job.validation.warnings.length ? <ul className="studio-quality-warnings">{job.validation.warnings.map((item, index) => <li key={'warning-' + index}>{item}</li>)}</ul> : null}
                   </section>
                 ) : null}
+
+                {job.status === 'needs_review' && selectedIsLatest ? <section className="studio-action-card studio-optional-card">
+                  <div className="studio-section-heading"><div><h3>Revisão visual (opcional)</h3>
+                    <p>A revisão só é executada quando você solicitar e apenas informa possíveis problemas; ela não cria outra arte.</p></div></div>
+                  <button className="studio-quiet-button" type="button" disabled={busy}
+                    onClick={() => void requestQualityReview()}>
+                    {job.validation ? 'Solicitar nova revisão visual' : 'Solicitar revisão visual'}
+                  </button>
+                </section> : null}
 
                 {job.status === 'needs_review' ? <>
                   <section className="studio-action-card">
