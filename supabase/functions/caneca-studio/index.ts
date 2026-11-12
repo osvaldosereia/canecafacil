@@ -3,8 +3,9 @@ import { corsHeaders as supabaseCorsHeaders } from "@supabase/supabase-js/cors";
 
 const TABLE = "caneca_studio_jobs";
 const BUCKET = "caneca-studio-assets";
-const IMAGE_MODEL = Deno.env.get("OPENAI_IMAGE_MODEL")?.trim() || "gpt-image-2.5-sunburst";
-const REVIEW_MODEL = Deno.env.get("OPENAI_REVIEW_MODEL")?.trim() || "gpt-6-astra";
+const IMAGE_MODEL = "gpt-image-2.5-flare";
+const IMAGE_QUALITY = "medium";
+const REVIEW_MODEL = "gpt-6.1-terra";
 const ART_SIZE = "2400x960";
 const SIGNED_URL_TTL = 900;
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
@@ -23,12 +24,30 @@ const corsHeaders = {
 type CreationMode = "reference" | "from_scratch";
 type Side = "left" | "right";
 type GenerationSide = Side | "both";
+type SideSize = { left: number; right: number };
+type SavedPromptCommand = { id: string; title: string; instruction: string; categoryId: string | null };
+type SavedCreationConfiguration = {
+  title: string;
+  creationMode: CreationMode;
+  artDescription: string;
+  generationSide: GenerationSide;
+  mandatoryText: string[];
+  selectedCommands: SavedPromptCommand[];
+  sizeBySide: SideSize;
+  referenceUsed: boolean;
+  imageModel: string;
+  imageQuality: string;
+  imageSize: string;
+  compiledPrompt: string;
+};
 type StudioInput = {
   title: string;
   creationMode: CreationMode;
   artDescription?: string;
   generationSide?: GenerationSide;
   mandatoryText?: string[];
+  selectedCommands?: SavedPromptCommand[];
+  sizeBySide?: SideSize;
   // Legacy fields remain readable so existing jobs can still be revised.
   occasion?: string | null;
   recipient?: string | null;
@@ -65,6 +84,8 @@ type ArtVersion = {
   instruction?: string | null;
   createdAt?: string;
   generationSide?: GenerationSide;
+  updatedSides?: Side[];
+  configuration?: SavedCreationConfiguration;
 };
 type MockupAsset = { version: number; side: Side | "front" | "back"; path: string };
 type PrintState = {
@@ -156,6 +177,66 @@ function readList(form: FormData, name: string, maxItems = 12): string[] {
     throw new Error("invalid_studio_input");
   }
   return list;
+}
+
+function readSelectedCommands(form: FormData): SavedPromptCommand[] {
+  const raw = readText(form, "selectedCommands", 16000);
+  if (!raw) return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error("invalid_studio_input");
+  }
+  if (!Array.isArray(value) || value.length > 40) throw new Error("invalid_studio_input");
+  return value.map((item) => {
+    if (!item || typeof item !== "object") throw new Error("invalid_studio_input");
+    const command = item as Record<string, unknown>;
+    const id = typeof command.id === "string" ? command.id.trim() : "";
+    const title = typeof command.title === "string" ? command.title.trim() : "";
+    const instruction = typeof command.instruction === "string" ? command.instruction.trim() : "";
+    const categoryId = command.categoryId === null || command.categoryId === undefined
+      ? null
+      : typeof command.categoryId === "string" ? command.categoryId.trim() : undefined;
+    if (!id || id.length > 200 || !title || title.length > 120 || !instruction ||
+      instruction.length > 1200 || categoryId === undefined || (categoryId !== null && categoryId.length > 200)) {
+      throw new Error("invalid_studio_input");
+    }
+    return { id, title, instruction, categoryId };
+  });
+}
+
+function isValidSideSize(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 50 && value <= 150 && value % 5 === 0;
+}
+
+function validSizeBySide(value: unknown): value is SideSize {
+  if (!value || typeof value !== "object") return false;
+  const sizes = value as Record<string, unknown>;
+  return isValidSideSize(sizes.left) && isValidSideSize(sizes.right);
+}
+
+function creationConfiguration(
+  input: StudioInput,
+  compiledPrompt: string,
+  referenceUsed: boolean,
+  generationSide: GenerationSide = input.generationSide || "both",
+  sizeBySide: SideSize = input.sizeBySide || { left: 100, right: 100 },
+): SavedCreationConfiguration {
+  return {
+    title: input.title,
+    creationMode: input.creationMode,
+    artDescription: input.artDescription || input.mainTheme || "",
+    generationSide,
+    mandatoryText: Array.isArray(input.mandatoryText) ? [...input.mandatoryText] : [],
+    selectedCommands: Array.isArray(input.selectedCommands) ? input.selectedCommands.map((command) => ({ ...command })) : [],
+    sizeBySide: { ...sizeBySide },
+    referenceUsed,
+    imageModel: IMAGE_MODEL,
+    imageQuality: IMAGE_QUALITY,
+    imageSize: ART_SIZE,
+    compiledPrompt,
+  };
 }
 
 function detectImageMime(bytes: Uint8Array): string | null {
@@ -283,6 +364,7 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
   if ((creationMode === "reference") !== Boolean(reference)) throw new Error("invalid_studio_input");
 
   const title = readText(form, "title", 100) || ("Caneca - " + artDescription.slice(0, 80));
+  const selectedCommands = readSelectedCommands(form);
   return {
     input: {
       title,
@@ -290,6 +372,8 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
       artDescription,
       generationSide,
       mandatoryText: readList(form, "mandatoryText"),
+      selectedCommands,
+      sizeBySide: { left: 100, right: 100 },
       occasion: readText(form, "occasion", 120),
       recipient: readText(form, "recipient", 120),
       mainTheme: legacyMainTheme || undefined,
@@ -488,7 +572,7 @@ async function openAIImage(
     form.set("model", IMAGE_MODEL);
     form.set("prompt", prompt);
     form.set("size", size);
-    form.set("quality", "medium");
+    form.set("quality", IMAGE_QUALITY);
     form.set("output_format", "webp");
     form.set("background", "opaque");
     const imageCopy = new Uint8Array(image.bytes.byteLength);
@@ -507,7 +591,7 @@ async function openAIImage(
         model: IMAGE_MODEL,
         prompt,
         size,
-        quality: "medium",
+        quality: IMAGE_QUALITY,
         output_format: "webp",
         background: "opaque",
         n: 1,
@@ -553,6 +637,7 @@ async function reviewArtwork(apiKey: string, bytes: Uint8Array, input: StudioInp
       headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: REVIEW_MODEL,
+        reasoning: { effort: "low" },
         store: false,
         max_output_tokens: 1200,
         text: { format: { type: "json_object" } },
@@ -659,6 +744,18 @@ async function jobSnapshot(
       instruction: version.instruction ?? null,
       createdAt: version.createdAt ?? null,
       generationSide: version.generationSide || job.input?.generationSide || "both",
+      updatedSides: version.updatedSides || [],
+      configuration: version.configuration || {
+        ...creationConfiguration(
+          job.input,
+          makeArtPrompt(job.input),
+          job.input?.creationMode === "reference",
+          version.generationSide || job.input?.generationSide || "both",
+          job.input?.sizeBySide || { left: 100, right: 100 },
+        ),
+        imageModel: "Não registrado nesta versão antiga",
+        imageQuality: "Não registrada",
+      },
       url: normalizeSignedUrl(url, data.signedUrl),
     };
   }));
@@ -816,6 +913,7 @@ async function advanceJob(
           parentVersion: null,
           createdAt: new Date().toISOString(),
           generationSide: job.input?.generationSide || "both",
+          configuration: creationConfiguration(job.input, imagePrompt, job.input?.creationMode === "reference"),
         }],
         error_code: null,
       })));
@@ -844,6 +942,7 @@ async function advanceJob(
         const base = versions.find((item) => item.version === pendingEdit.baseVersion);
         if (!base) throw new Error("studio_art_missing");
         const previous = await downloadPrivate(adminClient, base.path);
+        const generationSide = pendingEdit.side || job.input?.generationSide || "both";
         const prompt = makeArtPrompt(job.input) +
           "\nApply only the requested change. Keep all other artwork, spelling, proportions, and placement from the reference unchanged.";
         const bytes = await openAIImage(apiKey, prompt, ART_SIZE, {
@@ -861,7 +960,14 @@ async function advanceJob(
           parentVersion: base.version,
           instruction: pendingEdit.instruction,
           createdAt: new Date().toISOString(),
-          generationSide: pendingEdit.side || job.input?.generationSide || "both",
+          generationSide,
+          configuration: creationConfiguration(
+            job.input,
+            prompt,
+            job.input?.creationMode === "reference",
+            generationSide,
+            base.configuration?.sizeBySide || job.input?.sizeBySide || { left: 100, right: 100 },
+          ),
         }];
         return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
           input: nextInput,
@@ -897,6 +1003,13 @@ async function advanceJob(
         instruction: corrections,
         createdAt: new Date().toISOString(),
         generationSide: job.input?.generationSide || "both",
+        configuration: creationConfiguration(
+          job.input,
+          prompt,
+          job.input?.creationMode === "reference",
+          job.input?.generationSide || "both",
+          art.configuration?.sizeBySide || job.input?.sizeBySide || { left: 100, right: 100 },
+        ),
       }];
       return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         art_versions: nextVersions,
@@ -1078,9 +1191,11 @@ async function handleRequest(request: Request): Promise<Response> {
     if (!form) return json({ error: "invalid_studio_input" }, 400);
     const jobId = readActionText(form, "jobId", 36) || "";
     const version = Number(readActionText(form, "version", 12) || "");
-    const sideValue = readActionText(form, "side", 8);
+    const sidesText = readActionText(form, "sides", 20) || readActionText(form, "side", 8) || "";
+    const selectedSides = sidesText.split(",").filter((side): side is Side => side === "left" || side === "right");
     if (!isValidJobId(jobId) || !Number.isInteger(version) || version < 1 ||
-      (sideValue !== "left" && sideValue !== "right")) {
+      selectedSides.length < 1 || new Set(selectedSides).size !== selectedSides.length ||
+      selectedSides.length !== sidesText.split(",").length) {
       return json({ error: "invalid_studio_input" }, 400);
     }
 
@@ -1099,14 +1214,38 @@ async function handleRequest(request: Request): Promise<Response> {
       return json({ error: "studio_job_conflict" }, 409);
     }
 
+    const previousSize = base.configuration?.sizeBySide || job.input.sizeBySide || { left: 100, right: 100 };
+    const sizeText = readActionText(form, "sizeBySide", 100);
+    let sizeBySide: SideSize = { ...previousSize };
+    if (sizeText) {
+      try {
+        const parsed = JSON.parse(sizeText) as unknown;
+        if (!validSizeBySide(parsed)) return json({ error: "invalid_studio_input" }, 400);
+        sizeBySide = { ...parsed };
+      } catch {
+        return json({ error: "invalid_studio_input" }, 400);
+      }
+    } else {
+      for (const side of selectedSides) sizeBySide[side] = 100;
+    }
+
     const nextVersion = versions.reduce((max, item) => Math.max(max, item.version), 0) + 1;
     const path = job.id + "/art-v" + nextVersion + "-" + crypto.randomUUID() + ".webp";
     let updated: JobRow;
     try {
       await uploadPrivate(adminClient, path, artwork.bytes, artwork.mimeType);
-      const side = sideValue as Side;
-      const nextInput = archivePrintState(job.input);
-      nextInput.generationSide = side;
+      const generationSide: GenerationSide = selectedSides.length === 2 ? "both" : selectedSides[0];
+      const baseConfiguration = base.configuration;
+      const nextInput = archivePrintState({
+        ...job.input,
+        title: baseConfiguration?.title || job.input.title,
+        creationMode: baseConfiguration?.creationMode || job.input.creationMode,
+        artDescription: baseConfiguration?.artDescription || job.input.artDescription,
+        mandatoryText: baseConfiguration?.mandatoryText || job.input.mandatoryText,
+        selectedCommands: baseConfiguration?.selectedCommands || job.input.selectedCommands,
+        generationSide,
+        sizeBySide,
+      });
       nextInput.pendingEdit = null;
       nextInput.latestEditInstruction = null;
       nextInput.mockupTargetVersion = null;
@@ -1116,9 +1255,17 @@ async function handleRequest(request: Request): Promise<Response> {
         path,
         source: "operator_upload" as const,
         parentVersion: base.version,
-        instruction: "Arte pronta enviada para o lado " + side + ".",
+        instruction: "Arte e tamanho aplicados nos lados: " + selectedSides.join(" e ") + ".",
         createdAt: new Date().toISOString(),
-        generationSide: side,
+        generationSide,
+        updatedSides: selectedSides,
+        configuration: creationConfiguration(
+          nextInput,
+          baseConfiguration?.compiledPrompt || makeArtPrompt(nextInput),
+          baseConfiguration?.referenceUsed ?? (job.input.creationMode === "reference"),
+          generationSide,
+          sizeBySide,
+        ),
       }];
       updated = await writeJob(adminClient, job.id, sessionId, {
         input: nextInput,
@@ -1156,7 +1303,8 @@ async function handleRequest(request: Request): Promise<Response> {
     const job = await getJob(adminClient, body.jobId, sessionId);
     if (!job) return json({ error: "studio_job_not_found" }, 404);
     const versions = Array.isArray(job.art_versions) ? job.art_versions : [];
-    if (!versions.some((item) => item.version === version) || job.status !== "needs_review" || job.processing) {
+    const base = versions.find((item) => item.version === version);
+    if (!base || job.status !== "needs_review" || job.processing) {
       return json({ error: "studio_job_conflict" }, 409);
     }
     const rateDecision = await checkPublicStartLimit(adminClient, request);
@@ -1164,7 +1312,16 @@ async function handleRequest(request: Request): Promise<Response> {
     if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
 
     try {
-      const nextInput = archivePrintState(job.input);
+      const baseConfiguration = base.configuration;
+      const nextInput = archivePrintState({
+        ...job.input,
+        title: baseConfiguration?.title || job.input.title,
+        creationMode: baseConfiguration?.creationMode || job.input.creationMode,
+        artDescription: baseConfiguration?.artDescription || job.input.artDescription,
+        mandatoryText: baseConfiguration?.mandatoryText || job.input.mandatoryText,
+        selectedCommands: baseConfiguration?.selectedCommands || job.input.selectedCommands,
+        sizeBySide: baseConfiguration?.sizeBySide || job.input.sizeBySide || { left: 100, right: 100 },
+      });
       nextInput.generationSide = side as GenerationSide;
       nextInput.pendingEdit = { baseVersion: version, instruction, side: side as GenerationSide };
       nextInput.latestEditInstruction = instruction;
@@ -1311,3 +1468,4 @@ async function handleRequest(request: Request): Promise<Response> {
 }
 
 Deno.serve(handleRequest);
+

@@ -1,19 +1,36 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { PromptLibraryPanel } from '../components/PromptLibraryPanel';
-import { composeSideArtwork, createMockupSideReference, type MugArtSide } from '../lib/mug-artwork';
+import { composeSideArtworks, createMockupSideReference, type MugArtSide } from '../lib/mug-artwork';
 import { composePromptNotes, type QuickPromptCommand } from '../lib/prompt-library';
 import './StudioPage.css';
 
 type GenerationSide = MugArtSide | 'both';
 type Asset = { version: number; url: string };
+type SavedCreationConfiguration = {
+  title: string;
+  creationMode: 'from_scratch' | 'reference';
+  artDescription: string;
+  generationSide: GenerationSide;
+  mandatoryText: string[];
+  selectedCommands: QuickPromptCommand[];
+  sizeBySide: Record<MugArtSide, number>;
+  referenceUsed: boolean;
+  imageModel: string;
+  imageQuality: string;
+  imageSize: string;
+  compiledPrompt: string;
+};
 type ArtVersion = Asset & {
   source: 'initial' | 'operator_edit' | 'quality_gate' | 'operator_upload';
   parentVersion: number | null;
   instruction: string | null;
   createdAt: string | null;
   generationSide?: GenerationSide;
+  updatedSides?: MugArtSide[];
+  configuration?: SavedCreationConfiguration;
 };
+type ReusedConfiguration = { version: number; side: MugArtSide; configuration: SavedCreationConfiguration };
 type MockupAsset = Asset & { side: MugArtSide };
 type QualityReview = {
   approved: boolean;
@@ -147,7 +164,14 @@ function formatDate(value: string): string {
 export function StudioPage({ client }: StudioPageProps) {
   const [mode, setMode] = useState<'from_scratch' | 'reference'>('from_scratch');
   const [generationSide, setGenerationSide] = useState<GenerationSide>('both');
+  const [projectTitle, setProjectTitle] = useState('');
+  const [artDescription, setArtDescription] = useState('');
+  const [mandatoryText, setMandatoryText] = useState('');
   const [reference, setReference] = useState<File | null>(null);
+  const [sideArtworkFiles, setSideArtworkFiles] = useState<Record<MugArtSide, File | null>>({ left: null, right: null });
+  const [sideScales, setSideScales] = useState<Record<MugArtSide, number>>({ left: 100, right: 100 });
+  const [reusedConfiguration, setReusedConfiguration] = useState<ReusedConfiguration | null>(null);
+  const [excludedReusedCommandIds, setExcludedReusedCommandIds] = useState<string[]>([]);
   const [job, setJob] = useState<Job | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
@@ -228,11 +252,23 @@ export function StudioPage({ client }: StudioPageProps) {
     event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
+    const reusedCommands = (reusedConfiguration?.configuration.selectedCommands ?? [])
+      .filter((command) => !excludedReusedCommandIds.includes(command.id));
+    const commandsById = new Map<string, QuickPromptCommand>();
+    for (const command of [...reusedCommands, ...selectedQuickCommands]) {
+      if (!commandsById.has(command.id)) commandsById.set(command.id, command);
+    }
+    const commands = [...commandsById.values()];
     let artDescription: string;
     try {
-      artDescription = composePromptNotes(String(form.get('artDescription') ?? ''), selectedQuickCommands);
+      artDescription = composePromptNotes(String(form.get('artDescription') ?? ''), commands);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Reduza as instruções antes de gerar a arte.');
+      setNotice(null);
+      return;
+    }
+    if (mode === 'reference' && !reference) {
+      setError('Escolha uma imagem de referência para continuar.');
       setNotice(null);
       return;
     }
@@ -244,14 +280,22 @@ export function StudioPage({ client }: StudioPageProps) {
       form.set('creationMode', mode);
       form.set('generationSide', generationSide);
       form.set('artDescription', artDescription);
+      form.set('selectedCommands', JSON.stringify(commands));
       if (reference) form.set('reference', reference);
       const created = await callStudio(client, form) as Job;
       setLatestVersionSeen(null);
       acceptJob(created, true);
       setNotice('Criação iniciada. Primeiro será gerada uma arte pronta para impressão.');
       formElement.reset();
+      setProjectTitle('');
+      setArtDescription('');
+      setMandatoryText('');
       setSelectedQuickCommands([]);
       setReference(null);
+      setSideArtworkFiles({ left: null, right: null });
+      setSideScales({ left: 100, right: 100 });
+      setReusedConfiguration(null);
+      setExcludedReusedCommandIds([]);
       setMode('from_scratch');
       setGenerationSide('both');
       void refreshHistory().catch(() => undefined);
@@ -325,26 +369,39 @@ export function StudioPage({ client }: StudioPageProps) {
     }
   }
 
-  async function uploadSideArtwork(side: MugArtSide, file: File) {
+  async function applySideArtChanges() {
     if (!job || !chosenArt || selectedVersion === null || job.status !== 'needs_review') return;
+    const currentSize = chosenArt.configuration?.sizeBySide ?? { left: 100, right: 100 };
+    const changedSides = (['left', 'right'] as const).filter((side) =>
+      Boolean(sideArtworkFiles[side]) || sideScales[side] !== currentSize[side]);
+    if (!changedSides.length) return;
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const artwork = await composeSideArtwork(chosenArt.url, side, file);
+      const artwork = await composeSideArtworks(chosenArt.url, {
+        left: { file: sideArtworkFiles.left, size: sideScales.left, currentSize: currentSize.left },
+        right: { file: sideArtworkFiles.right, size: sideScales.right, currentSize: currentSize.right },
+      });
       const form = new FormData();
       form.set('action', 'upload_art');
       form.set('jobId', job.projectId);
       form.set('version', String(selectedVersion));
-      form.set('side', side);
+      form.set('sides', changedSides.join(','));
+      form.set('sizeBySide', JSON.stringify(sideScales));
       form.set('artwork', artwork);
       const updated = await callStudio(client, form) as Job;
       setLatestVersionSeen(null);
       acceptJob(updated, true);
-      setNotice(`Arte pronta aplicada somente no ${sideText(side)}. O outro lado foi preservado.`);
+      setSideArtworkFiles({ left: null, right: null });
+      setNotice(changedSides.length === 2
+        ? 'Arte e tamanho atualizados nos dois lados. A versão anterior foi preservada.'
+        : `Arte e tamanho atualizados no lado ${changedSides[0] === 'left' ? 'esquerdo' : 'direito'}. O outro lado foi preservado.`);
       void refreshHistory().catch(() => undefined);
     } catch (cause) {
-      setError(errorMessage(cause, 'Não foi possível aplicar essa arte pronta. Use PNG, JPEG ou WebP de até 8 MB.'));
+      setError(cause instanceof Error && apiErrors[cause.message]
+        ? apiErrors[cause.message]
+        : 'Não foi possível aplicar essa arte ou tamanho. Use PNG, JPEG ou WebP de até 8 MB.');
     } finally {
       setBusy(false);
     }
@@ -353,7 +410,8 @@ export function StudioPage({ client }: StudioPageProps) {
   function handleSideFile(side: MugArtSide, event: ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = '';
-    if (file) void uploadSideArtwork(side, file);
+    setSideArtworkFiles((current) => ({ ...current, [side]: file ?? null }));
+    if (file) setSideScales((current) => ({ ...current, [side]: 100 }));
   }
 
   async function approveForPrint(event: FormEvent<HTMLFormElement>) {
@@ -438,6 +496,61 @@ export function StudioPage({ client }: StudioPageProps) {
   const queuedArt = job?.artVersions.find((version) => version.version === queuedVersion) ?? null;
   const selectedMockups = job?.mockups.filter((asset) => asset.version === selectedVersion) ?? [];
   const selectedIsLatest = chosenArt?.version === job?.artVersions.at(-1)?.version;
+  const currentSideScales = chosenArt?.configuration?.sizeBySide ?? { left: 100, right: 100 };
+  const changedArtSides = (['left', 'right'] as const).filter((side) =>
+    Boolean(sideArtworkFiles[side]) || sideScales[side] !== currentSideScales[side]);
+  const reuseSides: MugArtSide[] = chosenArt?.updatedSides?.length === 1
+    ? [chosenArt.updatedSides[0] === 'left' ? 'right' : 'left']
+    : chosenArt?.generationSide === 'left' ? ['right']
+      : chosenArt?.generationSide === 'right' ? ['left'] : ['left', 'right'];
+
+  useEffect(() => {
+    setSideArtworkFiles({ left: null, right: null });
+    setSideScales(chosenArt?.configuration?.sizeBySide ?? { left: 100, right: 100 });
+  }, [job?.projectId, selectedVersion, chosenArt?.configuration?.sizeBySide?.left, chosenArt?.configuration?.sizeBySide?.right]);
+
+  async function reuseConfigurationForSide(side: MugArtSide) {
+    if (!chosenArt?.configuration) return;
+    setError(null);
+    const configuration = chosenArt.configuration;
+    let referenceFile: File | null = null;
+    try {
+      const response = await fetch(chosenArt.url, { mode: 'cors', credentials: 'omit' });
+      if (response.ok) {
+        const blob = await response.blob();
+        if (blob.size > 0 && blob.size <= 8 * 1024 * 1024 && ['image/png', 'image/jpeg', 'image/webp'].includes(blob.type)) {
+          referenceFile = new File([blob], `referencia-caneca-v${chosenArt.version}.${blob.type.split('/')[1]}`, { type: blob.type });
+        }
+      }
+    } catch { /* Reuse the saved prompt even if the optional reference cannot be fetched. */ }
+
+    const savedCommands = configuration.selectedCommands || [];
+    let reusableDescription = configuration.artDescription || '';
+    if (savedCommands.length) {
+      try {
+        const commandNotes = composePromptNotes('', savedCommands);
+        const commandSuffix = `\n\n${commandNotes}`;
+        if (reusableDescription.endsWith(commandSuffix)) {
+          reusableDescription = reusableDescription.slice(0, -commandSuffix.length);
+        } else if (reusableDescription === commandNotes) {
+          reusableDescription = '';
+        }
+      } catch { /* Keep the full saved description if its command snapshot is no longer valid. */ }
+    }
+
+    setProjectTitle(`${configuration.title || job?.title || 'Caneca'} · lado ${side === 'left' ? 'esquerdo' : 'direito'}`.slice(0, 100));
+    setArtDescription(reusableDescription);
+    setMandatoryText((configuration.mandatoryText || []).join('\n'));
+    setGenerationSide(side);
+    setSelectedQuickCommands([]);
+    setReference(referenceFile);
+    setMode(referenceFile ? 'reference' : 'from_scratch');
+    setReusedConfiguration({ version: chosenArt.version, side, configuration });
+    setExcludedReusedCommandIds([]);
+    setNotice(referenceFile
+      ? `Configuração da versão ${chosenArt.version} carregada para o lado ${side === 'left' ? 'esquerdo' : 'direito'}, usando a arte atual como referência.`
+      : `Configuração da versão ${chosenArt.version} carregada para o lado ${side === 'left' ? 'esquerdo' : 'direito'}.`);
+  }
 
   return (
     <div className="studio-page">
@@ -464,7 +577,7 @@ export function StudioPage({ client }: StudioPageProps) {
 
               <label className="studio-field">
                 <span>Nome do projeto</span>
-                <input name="title" maxLength={100} placeholder="Ex.: Presente da Marina" />
+                <input name="title" maxLength={100} value={projectTitle} onChange={(event) => setProjectTitle(event.currentTarget.value)} placeholder="Ex.: Presente da Marina" />
               </label>
 
               <div className="studio-field studio-side-field">
@@ -490,20 +603,24 @@ export function StudioPage({ client }: StudioPageProps) {
               {mode === 'reference' ? (
                 <label className="studio-field">
                   <span>Imagem de referência</span>
-                  <input type="file" accept="image/png,image/jpeg,image/webp" required
+                  <input type="file" accept="image/png,image/jpeg,image/webp"
                     onChange={(event) => setReference(event.currentTarget.files?.[0] ?? null)} />
                   <small>PNG, JPEG ou WebP, até 8 MB. O arquivo fica privado.</small>
+                  {reference ? <small>Imagem carregada: {reference.name}</small> : null}
                 </label>
               ) : null}
 
               <label className="studio-field">
                 <span>Descreva a arte</span>
-                <textarea name="artDescription" maxLength={1200} required rows={4}
+                <textarea name="artDescription" maxLength={1200} required rows={4} value={artDescription}
+                  onChange={(event) => setArtDescription(event.currentTarget.value)}
                   placeholder="Escreva com suas palavras o que você quer ver na caneca. Ex.: flores amarelas e folhas verdes, com aparência delicada." />
               </label>
 
               <label className="studio-field"><span>Texto exato (opcional)</span>
-                <textarea name="mandatoryText" rows={2} maxLength={1000} placeholder="Escreva somente o texto que deve aparecer, com a grafia exata." />
+                <textarea name="mandatoryText" rows={2} maxLength={1000} value={mandatoryText}
+                  onChange={(event) => setMandatoryText(event.currentTarget.value)}
+                  placeholder="Escreva somente o texto que deve aparecer, com a grafia exata." />
               </label>
             </section>
 
@@ -511,6 +628,22 @@ export function StudioPage({ client }: StudioPageProps) {
               selectedCommands={selectedQuickCommands}
               onSelectedCommandsChange={setSelectedQuickCommands}
             />
+            {reusedConfiguration ? <section className="studio-config-reuse" role="status">
+              <div><strong>Configuração da versão {reusedConfiguration.version} reutilizada</strong>
+                <p>Descrição, texto exato e comandos selecionados podem ser ajustados antes de criar o lado {reusedConfiguration.side === 'left' ? 'esquerdo' : 'direito'}.</p>
+                {reusedConfiguration.configuration.selectedCommands.length ? <ul className="studio-reused-commands">
+                  {reusedConfiguration.configuration.selectedCommands
+                    .filter((command) => !excludedReusedCommandIds.includes(command.id))
+                    .map((command) => <li key={command.id}><span>{command.title}</span>
+                      <button className="studio-link-button" type="button" onClick={() => setExcludedReusedCommandIds((ids) => [...ids, command.id])}>Remover</button>
+                    </li>)}
+                </ul> : <small>Esta versão não tinha comandos rápidos salvos.</small>}
+              </div>
+              <button className="studio-link-button" type="button" onClick={() => {
+                setReusedConfiguration(null);
+                setExcludedReusedCommandIds([]);
+              }}>Limpar reutilização</button>
+            </section> : null}
 
             <section className="studio-card studio-form-action-card">
               <button className="studio-submit" disabled={busy || Boolean(job && !finished(job.status))} type="submit">
@@ -570,25 +703,73 @@ export function StudioPage({ client }: StudioPageProps) {
                   </figcaption>
                 </figure> : null}
 
+                {chosenArt?.configuration ? <section className="studio-config-card">
+                  <div className="studio-section-heading"><div><h3>Configuração salva da versão {chosenArt.version}</h3>
+                    <p>{chosenArt.configuration.selectedCommands.length} comando(s) · {chosenArt.configuration.imageModel} · qualidade {chosenArt.configuration.imageQuality}</p></div></div>
+                  <details>
+                    <summary>Ver todos os dados usados nesta criação</summary>
+                    <p><strong>Modo:</strong> {chosenArt.configuration.creationMode === 'reference' ? 'com referência' : 'do zero'} · <strong>Lado:</strong> {sideText(chosenArt.configuration.generationSide)}</p>
+                    <p><strong>Tamanho por lado:</strong> esquerda {chosenArt.configuration.sizeBySide.left}% · direita {chosenArt.configuration.sizeBySide.right}%</p>
+                    <p><strong>Imagem de referência usada:</strong> {chosenArt.configuration.referenceUsed ? 'sim' : 'não'}</p>
+                    <div><strong>Comandos rápidos:</strong>{chosenArt.configuration.selectedCommands.length
+                      ? <ul className="studio-saved-command-list">{chosenArt.configuration.selectedCommands.map((command) => <li key={command.id}>
+                        <strong>{command.title}{command.categoryId ? ` · categoria ${command.categoryId}` : ''}</strong>
+                        <span>{command.instruction}</span>
+                      </li>)}</ul>
+                      : <p>nenhum comando rápido selecionado</p>}</div>
+                    {chosenArt.configuration.mandatoryText.length ? <p><strong>Texto exato:</strong> {chosenArt.configuration.mandatoryText.join(' · ')}</p> : null}
+                    <p><strong>Descrição e instruções:</strong><br />{chosenArt.configuration.artDescription}</p>
+                    <p><strong>Arquivo:</strong> {chosenArt.configuration.imageSize} · <strong>modelo:</strong> {chosenArt.configuration.imageModel} ({chosenArt.configuration.imageQuality})</p>
+                    <details className="studio-saved-prompt"><summary>Prompt completo enviado ao modelo</summary>
+                      <pre>{chosenArt.configuration.compiledPrompt}</pre>
+                    </details>
+                  </details>
+                  <div className="studio-config-reuse-actions">
+                    {reuseSides.map((side) => <button className="studio-quiet-button" type="button" key={side} disabled={busy}
+                      onClick={() => void reuseConfigurationForSide(side)}>
+                      Reutilizar para criar o lado {side === 'left' ? 'esquerdo' : 'direito'}
+                    </button>)}
+                  </div>
+                </section> : null}
+
                 {chosenArt && job.status === 'needs_review' ? <section className="studio-side-upload" aria-label="Subir arte pronta por lado">
                   <div className="studio-section-heading">
-                    <div><h3>Subir arte pronta</h3><p>Troque um lado da caneca e preserve o outro.</p></div>
+                    <div><h3>Subir arte ou ajustar tamanho</h3><p>Escolha uma arte pronta e ajuste cada lado separadamente. O outro lado permanece igual.</p></div>
                   </div>
                   <div className="studio-side-upload-grid">
-                    <label className="studio-side-upload-control">
-                      <span>Lado esquerdo</span>
-                      <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy}
+                    <div className="studio-side-upload-control">
+                      <span>Arte do lado esquerdo · alça à esquerda</span>
+                      <input aria-label="Arquivo de arte do lado esquerdo" type="file" accept="image/png,image/jpeg,image/webp" disabled={busy}
                         onChange={(event) => handleSideFile('left', event)} />
-                      <small>Aplica a imagem somente na metade esquerda.</small>
-                    </label>
-                    <label className="studio-side-upload-control">
-                      <span>Lado direito</span>
-                      <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy}
+                      {sideArtworkFiles.left ? <small>Selecionada: {sideArtworkFiles.left.name}</small> : <small>Sem arquivo: redimensiona a arte atual.</small>}
+                      <span className="studio-scale-label">Tamanho da arte</span>
+                      <input aria-label="Tamanho da arte do lado esquerdo" type="range" min="50" max="150" step="5" value={sideScales.left} disabled={busy}
+                        onChange={(event) => setSideScales((current) => ({ ...current, left: Number(event.currentTarget.value) }))} />
+                      <span className="studio-scale-buttons">
+                        <button type="button" aria-label="Diminuir tamanho do lado esquerdo" disabled={busy || sideScales.left <= 50} onClick={() => setSideScales((current) => ({ ...current, left: Math.max(50, current.left - 5) }))}>−</button>
+                        <span>{sideScales.left}%</span>
+                        <button type="button" aria-label="Aumentar tamanho do lado esquerdo" disabled={busy || sideScales.left >= 150} onClick={() => setSideScales((current) => ({ ...current, left: Math.min(150, current.left + 5) }))}>+</button>
+                      </span>
+                    </div>
+                    <div className="studio-side-upload-control">
+                      <span>Arte do lado direito · alça à direita</span>
+                      <input aria-label="Arquivo de arte do lado direito" type="file" accept="image/png,image/jpeg,image/webp" disabled={busy}
                         onChange={(event) => handleSideFile('right', event)} />
-                      <small>Aplica a imagem somente na metade direita.</small>
-                    </label>
+                      {sideArtworkFiles.right ? <small>Selecionada: {sideArtworkFiles.right.name}</small> : <small>Sem arquivo: redimensiona a arte atual.</small>}
+                      <span className="studio-scale-label">Tamanho da arte</span>
+                      <input aria-label="Tamanho da arte do lado direito" type="range" min="50" max="150" step="5" value={sideScales.right} disabled={busy}
+                        onChange={(event) => setSideScales((current) => ({ ...current, right: Number(event.currentTarget.value) }))} />
+                      <span className="studio-scale-buttons">
+                        <button type="button" aria-label="Diminuir tamanho do lado direito" disabled={busy || sideScales.right <= 50} onClick={() => setSideScales((current) => ({ ...current, right: Math.max(50, current.right - 5) }))}>−</button>
+                        <span>{sideScales.right}%</span>
+                        <button type="button" aria-label="Aumentar tamanho do lado direito" disabled={busy || sideScales.right >= 150} onClick={() => setSideScales((current) => ({ ...current, right: Math.min(150, current.right + 5) }))}>+</button>
+                      </span>
+                    </div>
                   </div>
-                  <p className="studio-side-upload-note">PNG, JPEG ou WebP até 8 MB. A imagem é ajustada sem esticar e salva como nova versão de impressão.</p>
+                  <p className="studio-side-upload-note">Escala de 50% a 150%. Com arquivo novo, 100% ajusta a imagem para caber na metade sem deformar. A alteração é salva como nova versão e não consome geração da OpenAI.</p>
+                  <button className="studio-secondary" type="button" disabled={busy || !changedArtSides.length} onClick={() => void applySideArtChanges()}>
+                    {busy ? 'Aplicando…' : changedArtSides.length === 2 ? 'Aplicar os dois lados e tamanhos' : 'Aplicar arte e tamanho'}
+                  </button>
                 </section> : null}
 
                 {chosenArt?.instruction ? <p className="studio-version-note">{sourceText(chosenArt)}: {chosenArt.instruction}</p> : null}
@@ -686,3 +867,4 @@ export function StudioPage({ client }: StudioPageProps) {
     </div>
   );
 }
+

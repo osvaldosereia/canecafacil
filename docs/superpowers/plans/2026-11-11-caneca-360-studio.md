@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add secure artwork editing, approval, history, and Epson print production to the existing Caneca 360 Studio.
+**Goal:** Add secure artwork editing, reusable per-version settings, independent side scaling, approval, history, and Epson print production to the existing Caneca 360 Studio.
 
 **Architecture:** Keep the GitHub Pages React app and the existing Supabase Edge Function. Make the Studio password-free, scope work to the browser's random session UUID, enforce the existing IP generation limit, and store version/print metadata in existing JSONB fields and private Storage. Do not add Supabase resources; make mockups opt-in.
 
@@ -26,6 +26,9 @@
 - Do not show a login or password screen in the standalone Studio.
 - Keep the existing five-actions-per-IP-per-24-hours generation limit in front of every image-producing action.
 - Never overwrite an existing artwork version.
+- Keep each version's complete creation settings and prompt snapshot so it can seed a new creation for the other side.
+- Scale each side independently from 50% to 150% in 5% steps, without an OpenAI request.
+- Use GPT Image 2.5 Flare at medium quality for generation and GPT-6.1 Terra at low reasoning effort for review.
 - Do not generate mockups automatically.
 - Use 106 × 247 mm paper, a 235 × 106 mm art area, 100% scaling, one mirror, and one 90° rotation.
 
@@ -70,6 +73,17 @@
 - [x] Re-check access handling, version ownership, approval-before-print, print scale, mirror, and mobile layout.
 - [x] Run `npm run typecheck`, Edge Function TypeScript checking, and the Pages production build; report any unverified production-only behavior accurately.
 
+### Task 5: Save and reuse creation settings; scale sides independently
+
+**Files:** `apps/admin/src/pages/StudioPage.tsx`, `apps/admin/src/pages/StudioPage.css`, `apps/admin/src/lib/mug-artwork.ts`, `supabase/functions/caneca-studio/index.ts`, this spec
+
+- [x] Save title, mode, description, exact text, selected command snapshots/categories, target side, per-side scales, reference usage, model, quality, output size, and compiled prompt on every art version.
+- [x] Show the saved settings on the selected version and reuse them to prefill a new creation for either side.
+- [x] Let the operator remove individual saved commands before reusing a configuration.
+- [x] Adjust left and right side scale independently (50–150%, 5% increments), with uploads and resizing handled locally and the opposite half preserved.
+- [x] Use GPT Image 2.5 Flare at medium quality for faster routine image work, and GPT-6.1 Terra at low reasoning effort for a cheaper visual review.
+- [ ] Confirm published Pages UI exposes the settings card, per-side controls, and reuse flow.
+
 ## Review Focus
 
 - Expired signed URLs: refresh them before showing a saved job or sending it to print.
@@ -77,3 +91,6 @@
 - Browser print cancellation: do not increment printed count until the operator explicitly confirms.
 - Editing an approved/printed design: clear approval and require a fresh approval before printing.
 - Invalid print quantity or reprint reason: validate server-side before updating the queue.
+- Scaling only one half: retain the other half pixel-for-pixel and save the new scale in that version's configuration.
+- Reusing a configuration with removed quick commands: use the saved command snapshot unless the operator removes it before generation.
+

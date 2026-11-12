@@ -26,12 +26,15 @@ Use **Caneca 360** in the studio interface, with the descriptor **Criação, edi
 7. Require explicit approval of a particular version before adding it to the print queue. Store queue state inside the existing job JSON; do not add a Supabase project, table, bucket, or paid service.
 8. Print only the approved version. Use the existing Epson L1250 paper profile: 106 × 247 mm paper, 235 × 106 mm artwork area, portrait sheet, 100% scale, one horizontal mirror, and 90° rotation. Preserve artwork proportions with contain-fit to prevent silent cropping. Confirm each completed copy after the browser print dialog closes; require a reason to reprint a completed copy.
 9. Keep the app mobile-friendly. On small screens, the briefing, version history, edit controls, and print controls remain usable without horizontal scrolling.
+10. Let the operator independently scale the left and right print halves from 50% to 150%, in 5% steps. Apply scale changes in the browser without an OpenAI call, preserve the untouched half, and save each adjustment as a new immutable print version.
+11. Save a configuration snapshot on every art version: title, mode, description, exact text, selected quick-command snapshots and categories, target side, each side's scale, whether a reference was used, image model/quality/output size, and the compiled prompt. Show that snapshot with the version and let it prefill a new left- or right-side creation; allow removing saved quick commands before generating.
 
 ## Cost and infrastructure constraints
 
 - Reuse the existing Supabase Pro project, function, table, and bucket. Do not create Supabase resources or deploy another service.
 - Supabase function, database, and Storage calls still count against the existing plan quota; the app cannot promise zero variable Supabase usage.
 - Each generated or edited image, optional review, and optional mockup may use OpenAI API credits. Mockups are opt-in.
+- Use `gpt-image-2.5-flare` at medium quality for routine image generation and `gpt-6.1-terra` with low reasoning effort for visual review. Keep mockups opt-in, and do side uploads and scale changes locally without image API calls.
 - Keep rate limiting before any OpenAI request. Because the app is public, never remove or bypass the IP-based generation limit.
 
 ## Out of scope
@@ -44,8 +47,11 @@ Use **Caneca 360** in the studio interface, with the descriptor **Criação, edi
 - A request without a valid browser session UUID or within the IP generation limit is rejected before reading the OpenAI secret or accepting a generation.
 - An edit adds a new version without overwriting the previous art.
 - Initial art can target left, right, or the entire wrap; side uploads add a new print version and preserve the opposite half.
+- The operator can upload or resize each side independently; sizes are retained per version and do not generate OpenAI requests.
+- Every generated, edited, corrected, or uploaded version exposes its saved configuration and can reuse it to prefill the opposite-side creation.
 - Editing one side preserves the other side from the selected base version.
 - The left-handle mockup uses the left print half, and the right-handle mockup uses the right print half.
 - A selected version must be approved before it can be queued or printed.
 - The print preview uses the fixed Epson profile, keeps the art proportional, mirrors exactly once, and tracks completed copies and reprint reasons.
 - Existing Supabase resources are reused without schema or bucket creation.
+

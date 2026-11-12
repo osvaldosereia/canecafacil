@@ -47,50 +47,68 @@ function validateSourceFile(file: File): void {
   if (file.size > MAX_OUTPUT_BYTES) throw new Error('studio_art_file_too_large');
 }
 
-/** Replaces only one 1200×960 half of the print canvas, preserving the other half. */
-export async function composeSideArtwork(
-  existingArtUrl: string | null,
-  side: MugArtSide,
-  file: File,
+export type MugArtAdjustment = {
+  file: File | null;
+  size: number;
+  currentSize: number;
+};
+
+/** Replaces and/or scales either print half while preserving the other half exactly. */
+export async function composeSideArtworks(
+  existingArtUrl: string,
+  adjustments: Record<MugArtSide, MugArtAdjustment>,
 ): Promise<File> {
-  validateSourceFile(file);
-  let source: ImageBitmap;
-  try {
-    source = await createImageBitmap(file);
-  } catch {
-    throw new Error('invalid_studio_input');
+  const existing = await imageFromUrl(existingArtUrl);
+  if (existing.width !== MUG_ART_WIDTH || existing.height !== MUG_ART_HEIGHT) {
+    existing.close();
+    throw new Error('studio_art_dimensions_invalid');
   }
-  if (!source.width || !source.height) throw new Error('invalid_studio_input');
 
   const { canvas, context } = createCanvas(MUG_ART_WIDTH, MUG_ART_HEIGHT);
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, MUG_ART_WIDTH, MUG_ART_HEIGHT);
+  context.drawImage(existing, 0, 0);
 
-  if (existingArtUrl) {
-    const existing = await imageFromUrl(existingArtUrl);
-    if (existing.width !== MUG_ART_WIDTH || existing.height !== MUG_ART_HEIGHT) {
-      throw new Error('studio_art_dimensions_invalid');
+  try {
+    for (const side of ['left', 'right'] as const) {
+      const adjustment = adjustments[side];
+      if (!Number.isInteger(adjustment.size) || adjustment.size < 50 || adjustment.size > 150 || adjustment.size % 5 !== 0 ||
+        !Number.isInteger(adjustment.currentSize) || adjustment.currentSize < 50 || adjustment.currentSize > 150 || adjustment.currentSize % 5 !== 0) {
+        throw new Error('invalid_studio_input');
+      }
+      if (!adjustment.file && adjustment.size === adjustment.currentSize) continue;
+      if (adjustment.file) validateSourceFile(adjustment.file);
+
+      const source = adjustment.file ? await createImageBitmap(adjustment.file) : existing;
+      const sideX = side === 'left' ? 0 : MUG_SIDE_WIDTH;
+      const sourceX = adjustment.file ? 0 : sideX;
+      const sourceWidth = adjustment.file ? source.width : MUG_SIDE_WIDTH;
+      const sourceHeight = adjustment.file ? source.height : MUG_ART_HEIGHT;
+      if (!sourceWidth || !sourceHeight) {
+        if (adjustment.file) source.close();
+        throw new Error('invalid_studio_input');
+      }
+
+      const relativeScale = adjustment.file ? adjustment.size / 100 : adjustment.size / adjustment.currentSize;
+      const fit = Math.min(MUG_SIDE_WIDTH / sourceWidth, MUG_ART_HEIGHT / sourceHeight);
+      const width = Math.max(1, Math.round(sourceWidth * fit * relativeScale));
+      const height = Math.max(1, Math.round(sourceHeight * fit * relativeScale));
+      const drawX = sideX + Math.round((MUG_SIDE_WIDTH - width) / 2);
+      const drawY = Math.round((MUG_ART_HEIGHT - height) / 2);
+
+      context.save();
+      context.beginPath();
+      context.rect(sideX, 0, MUG_SIDE_WIDTH, MUG_ART_HEIGHT);
+      context.clip();
+      context.fillStyle = '#ffffff';
+      context.fillRect(sideX, 0, MUG_SIDE_WIDTH, MUG_ART_HEIGHT);
+      context.drawImage(source, sourceX, 0, sourceWidth, sourceHeight, drawX, drawY, width, height);
+      context.restore();
+      if (adjustment.file) source.close();
     }
-    context.drawImage(existing, 0, 0);
+  } finally {
     existing.close();
   }
-
-  const x = side === 'left' ? 0 : MUG_SIDE_WIDTH;
-  context.fillStyle = '#ffffff';
-  context.fillRect(x, 0, MUG_SIDE_WIDTH, MUG_ART_HEIGHT);
-
-  const insetX = Math.round(MUG_SIDE_WIDTH * 0.025);
-  const insetY = Math.round(MUG_ART_HEIGHT * 0.025);
-  const scale = Math.min(
-    (MUG_SIDE_WIDTH - insetX * 2) / source.width,
-    (MUG_ART_HEIGHT - insetY * 2) / source.height,
-  );
-  const width = Math.max(1, Math.round(source.width * scale));
-  const height = Math.max(1, Math.round(source.height * scale));
-  const drawX = x + Math.round((MUG_SIDE_WIDTH - width) / 2);
-  const drawY = Math.round((MUG_ART_HEIGHT - height) / 2);
-  context.drawImage(source, drawX, drawY, width, height);
-  source.close();
 
   return canvasFile(canvas, 'caneca-arte-2400x960.webp');
 }
@@ -109,3 +127,4 @@ export async function createMockupSideReference(artUrl: string, side: MugArtSide
   image.close();
   return canvasFile(canvas, `caneca-referencia-${side}.webp`);
 }
+
