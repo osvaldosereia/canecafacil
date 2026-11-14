@@ -58,6 +58,7 @@ type StudioInput = {
   forbiddenElements?: string[];
   compositionNotes?: string | null;
   latestEditInstruction?: string | null;
+  customerContact?: { name: string; email: string; whatsapp: string } | null;
   reviewRequested?: boolean;
   pendingEdit?: { baseVersion: number; instruction: string; side?: GenerationSide } | null;
   mockupTargetVersion?: number | null;
@@ -79,6 +80,7 @@ type QualityReview = {
 };
 type ArtVersion = {
   version: number;
+  variantIndex?: number;
   path: string;
   source?: "initial" | "operator_edit" | "quality_gate" | "operator_upload";
   parentVersion?: number | null;
@@ -88,7 +90,7 @@ type ArtVersion = {
   updatedSides?: Side[];
   configuration?: SavedCreationConfiguration;
 };
-type MockupAsset = { version: number; side: Side | "front" | "back"; path: string };
+type MockupAsset = { version: number; side: Side | "front" | "back" | "pair"; path: string };
 type PrintState = {
   approvedVersion: number | null;
   quantity: number;
@@ -457,12 +459,27 @@ function makeArtPrompt(input: StudioInput): string {
     "Create only the flat 2D artwork for printing as a wrap on a ceramic mug. Never draw a mug, product mockup, hands, table, or room.",
     "Final landscape canvas: " + ART_SIZE + " pixels; physical target approximately 24 x 9.5 cm.",
     "The center split is exactly x=1200 px: left-side artwork is the first half of the file; right-side artwork is the second half. Do not mirror or swap the halves.",
+    "Use a clean plain-white background. Keep the outer corners at both ends clear, preserve safe space around important content, and never let text or key motifs touch or cross a canvas edge.",
     "Keep important text and artwork comfortably inside the top and bottom print-safe area. Preserve the full canvas and do not stretch, crop, or compress the design.",
     sideInstruction,
     edgeInstruction,
     "Do not invent lettering, names, dates, or random text. Include only exact wording supplied below.",
     "Art description: " + description,
   ];
+  if (!input.pendingEdit && input.creationMode === "reference") {
+    lines.push(
+      "Use the supplied reference only as broad inspiration for its general subject, mood, and compatible visual language. Create a substantially original design with a new composition, arrangement, shapes, and illustrative details; never trace, copy, closely imitate, or recreate the reference.",
+      "Do not reproduce or retain any signature, artist name, watermark, logo, brand, copyright notice, website name, URL, social handle, QR code, or other source attribution visible in the reference. Omit those marks completely from the new artwork. Do not edit or present the reference itself as the result.",
+    );
+    lines.push(
+      "This request returns three separate print-art options. Make each output a standalone complete design, never a three-panel sheet or collage. The three options must be visibly different in composition and supporting details while following the same brief.",
+    );
+  }
+  if (!input.pendingEdit && generationSide === "both" && input.creationMode === "reference" && input.mandatoryText?.length) {
+    lines.push(
+      "Place the exact supplied name or phrase in the center of the LEFT HALF. Place the original reference-inspired illustration in the center of the RIGHT HALF. Keep the outer left and right corner areas clear, and keep a clean white background.",
+    );
+  }
   if (input.occasion) lines.push("Occasion: " + input.occasion);
   if (input.recipient) lines.push("Made for: " + input.recipient);
   if (input.desiredStyle) lines.push("Visual style: " + input.desiredStyle);
@@ -496,6 +513,16 @@ function makeMockupPrompt(side: Side): string {
     sideDescription,
     "Use soft natural studio lighting, a simple warm neutral background, and a realistic ceramic finish.",
     "Do not add extra logos, text, props that cover the mug, or additional mugs.",
+  ].join(" ");
+}
+
+function makePairMockupPrompt(): string {
+  return [
+    "Create exactly one square 1024 x 1024 realistic product image containing two separate views of the same white ceramic mug, arranged vertically: one view in the TOP half and one view in the BOTTOM half. The combined result is one square image, not two separate files.",
+    "The first supplied print image is the LEFT HALF of the wrap. In the TOP view, show one mug with its handle clearly pointing LEFT and print only that first image on the visible side, in its original left-side position and orientation.",
+    "The second supplied print image is the RIGHT HALF of the wrap. In the BOTTOM view, show one mug with its handle clearly pointing RIGHT and print only that second image on the visible side, in its original right-side position and orientation.",
+    "Keep both printed designs faithful to their supplied artwork: do not mirror, flip, rotate, swap, rewrite text, replace symbols, or move the design to the wrong side. Show the full mug clearly in each half, with a small clean separation between the two views and no overlap.",
+    "Use a simple light neutral studio background and soft natural lighting. Add no labels, captions, logos, watermarks, extra mugs, hands, props, or decorative borders.",
   ].join(" ");
 }
 
@@ -566,14 +593,16 @@ function base64ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
-async function openAIImage(
+async function openAIImages(
   apiKey: string,
   prompt: string,
   size: string,
-  image?: ReferenceImage,
-): Promise<Uint8Array> {
+  image?: ReferenceImage | ReferenceImage[],
+  count = 1,
+): Promise<Uint8Array[]> {
+  const references = image ? Array.isArray(image) ? image : [image] : [];
   let response: Response;
-  if (image) {
+  if (references.length) {
     const form = new FormData();
     form.set("model", IMAGE_MODEL);
     form.set("prompt", prompt);
@@ -581,9 +610,12 @@ async function openAIImage(
     form.set("quality", IMAGE_QUALITY);
     form.set("output_format", "webp");
     form.set("background", "opaque");
-    const imageCopy = new Uint8Array(image.bytes.byteLength);
-    imageCopy.set(image.bytes);
-    form.set("image", new File([imageCopy.buffer as ArrayBuffer], image.fileName, { type: image.mimeType }));
+    form.set("n", String(count));
+    for (const reference of references) {
+      const imageCopy = new Uint8Array(reference.bytes.byteLength);
+      imageCopy.set(reference.bytes);
+      form.append("image[]", new File([imageCopy.buffer as ArrayBuffer], reference.fileName, { type: reference.mimeType }));
+    }
     response = await fetch("https://api.openai.com/v1/images/edits", {
       method: "POST",
       headers: { Authorization: "Bearer " + apiKey },
@@ -600,7 +632,7 @@ async function openAIImage(
         quality: IMAGE_QUALITY,
         output_format: "webp",
         background: "opaque",
-        n: 1,
+        n: count,
       }),
     });
   }
@@ -613,9 +645,19 @@ async function openAIImage(
     console.error("[caneca-studio] image request failed", { status: response.status, requestId });
     throw new Error("studio_image_generation_failed");
   }
-  const encoded = payload.data?.[0]?.b64_json;
-  if (!encoded) throw new Error("studio_image_generation_failed");
-  return base64ToBytes(encoded);
+  const results = (payload.data || []).map((item) => item.b64_json).filter((item): item is string => Boolean(item));
+  if (results.length !== count) throw new Error("studio_image_generation_failed");
+  return results.map(base64ToBytes);
+}
+
+async function openAIImage(
+  apiKey: string,
+  prompt: string,
+  size: string,
+  image?: ReferenceImage | ReferenceImage[],
+): Promise<Uint8Array> {
+  const results = await openAIImages(apiKey, prompt, size, image, 1);
+  return results[0];
 }
 
 async function reviewArtwork(apiKey: string, bytes: Uint8Array, input: StudioInput): Promise<QualityReview> {
@@ -752,6 +794,7 @@ async function jobSnapshot(
     if (error || !data?.signedUrl) throw new Error("studio_job_lookup_failed");
     return {
       version: version.version,
+      variantIndex: version.variantIndex,
       source: version.source || "initial",
       parentVersion: version.parentVersion ?? null,
       instruction: version.instruction ?? null,
@@ -779,13 +822,15 @@ async function jobSnapshot(
       .createSignedUrl(asset.path, SIGNED_URL_TTL);
     if (error || !data?.signedUrl) throw new Error("studio_job_lookup_failed");
     const side = asset.side === "left" || asset.side === "front" ? "left" : "right";
-    return { version: asset.version, side, url: normalizeSignedUrl(url, data.signedUrl) };
+    const outputSide = asset.side === "pair" ? "pair" : side;
+    return { version: asset.version, side: outputSide, url: normalizeSignedUrl(url, data.signedUrl) };
   }));
   return {
     projectId: job.id,
     title: job.title,
     status: job.status,
     generationSide: job.input?.generationSide || "both",
+    customerContact: job.input?.customerContact || null,
     referenceUrl,
     processing: job.processing,
     art,
@@ -890,10 +935,16 @@ async function advanceJob(
 
   const job = claimed as JobRow;
   if (job.status === "needs_review" || job.status === "failed") {
-    return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
-      status: job.status,
-      processing: false,
-    })));
+    try {
+      return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
+        status: job.status,
+        processing: false,
+      }, job.updated_at)));
+    } catch {
+      const current = await getJob(adminClient, jobId, sessionId);
+      if (!current) return json({ error: "studio_job_not_found" }, 404);
+      return json(await jobSnapshot(adminClient, url, current));
+    }
   }
 
   if (job.status === "review_pending" && job.input?.reviewRequested !== true) {
@@ -938,20 +989,33 @@ async function advanceJob(
             : job.reference_path.endsWith(".webp") ? "image/webp" : "image/png",
         };
       }
-      const bytes = await openAIImage(apiKey, imagePrompt, ART_SIZE, reference);
-      const path = job.id + "/art-v1.webp";
-      await uploadPrivate(adminClient, path, bytes, "image/webp");
+      const generated = await openAIImages(apiKey, imagePrompt, ART_SIZE, reference, 3);
+      const createdAt = new Date().toISOString();
+      const artVersions: ArtVersion[] = [];
+      try {
+        for (let index = 0; index < generated.length; index++) {
+          const version = index + 1;
+          const path = job.id + "/art-v" + version + ".webp";
+          await uploadPrivate(adminClient, path, generated[index], "image/webp");
+          artVersions.push({
+            version,
+            variantIndex: index + 1,
+            path,
+            source: "initial",
+            parentVersion: null,
+            createdAt,
+            generationSide: job.input?.generationSide || "both",
+            configuration: creationConfiguration(job.input, imagePrompt, job.input?.creationMode === "reference"),
+          });
+        }
+      } catch (error) {
+        const uploadedPaths = artVersions.map((item) => item.path);
+        if (uploadedPaths.length) await adminClient.storage.from(BUCKET).remove(uploadedPaths);
+        throw error;
+      }
       return json(await jobSnapshot(adminClient, url, await writeJob(adminClient, job.id, sessionId, {
         status: "needs_review",
-        art_versions: [{
-          version: 1,
-          path,
-          source: "initial",
-          parentVersion: null,
-          createdAt: new Date().toISOString(),
-          generationSide: job.input?.generationSide || "both",
-          configuration: creationConfiguration(job.input, imagePrompt, job.input?.creationMode === "reference"),
-        }],
+        art_versions: artVersions,
         error_code: null,
       })));
     }
@@ -1016,6 +1080,40 @@ async function advanceJob(
         input: { ...job.input, reviewRequested: false },
         status: "needs_review",
       })));
+    }
+
+    if (job.status === "mockup_pair_pending") {
+      const targetVersion = job.input?.mockupTargetVersion;
+      const art = (Array.isArray(job.art_versions) ? job.art_versions : [])
+        .find((item) => item.version === targetVersion) || latestArt(job);
+      const references = job.input?.mockupReferencePaths;
+      if (!art || !references || references.version !== targetVersion) throw new Error("studio_mockup_reference_missing");
+      const [leftBytes, rightBytes] = await Promise.all([
+        downloadPrivate(adminClient, references.leftPath),
+        downloadPrivate(adminClient, references.rightPath),
+      ]);
+      const leftMime = references.leftPath.endsWith(".jpg") ? "image/jpeg"
+        : references.leftPath.endsWith(".webp") ? "image/webp" : "image/png";
+      const rightMime = references.rightPath.endsWith(".jpg") ? "image/jpeg"
+        : references.rightPath.endsWith(".webp") ? "image/webp" : "image/png";
+      const bytes = await openAIImage(apiKey, makePairMockupPrompt(), "1024x1024", [
+        { bytes: leftBytes, fileName: "arte-lado-esquerdo." + safeExtension(leftMime), mimeType: leftMime },
+        { bytes: rightBytes, fileName: "arte-lado-direito." + safeExtension(rightMime), mimeType: rightMime },
+      ]);
+      const path = job.id + "/mockup-v" + art.version + "-pair-" + Date.now() + ".webp";
+      await uploadPrivate(adminClient, path, bytes, "image/webp");
+      const mockups = [
+        ...(Array.isArray(job.mockups) ? job.mockups : []).filter((asset) => asset.version !== art.version),
+        { version: art.version, side: "pair" as const, path },
+      ];
+      const updated = await writeJob(adminClient, job.id, sessionId, {
+        mockups,
+        status: "needs_review",
+        input: { ...job.input, mockupTargetVersion: null, mockupReferencePaths: null },
+        error_code: null,
+      });
+      await adminClient.storage.from(BUCKET).remove([references.leftPath, references.rightPath]);
+      return json(await jobSnapshot(adminClient, url, updated));
     }
 
     if (["mockup_left_pending", "mockup_right_pending", "mockup_front_pending", "mockup_back_pending"].includes(job.status)) {
@@ -1172,9 +1270,6 @@ async function handleRequest(request: Request): Promise<Response> {
 
   if (action === "start") {
     if (!form) return json({ error: "invalid_studio_input" }, 400);
-    const rateDecision = await checkPublicStartLimit(adminClient, request);
-    if (rateDecision === "limited") return json({ error: "studio_rate_limited" }, 429);
-    if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
     try {
       return await startJob(adminClient, url, sessionId, form);
     } catch (error) {
@@ -1329,10 +1424,6 @@ async function handleRequest(request: Request): Promise<Response> {
     if (!base || job.status !== "needs_review" || job.processing) {
       return json({ error: "studio_job_conflict" }, 409);
     }
-    const rateDecision = await checkPublicStartLimit(adminClient, request);
-    if (rateDecision === "limited") return json({ error: "studio_rate_limited" }, 429);
-    if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
-
     try {
       const baseConfiguration = base.configuration;
       const nextInput = archivePrintState({
@@ -1367,7 +1458,15 @@ async function handleRequest(request: Request): Promise<Response> {
     if (!form) return json({ error: "invalid_studio_input" }, 400);
     const jobId = readActionText(form, "jobId", 36) || "";
     const version = Number(readActionText(form, "version", 12) || "");
+    const customerName = readActionText(form, "customerName", 120) || "";
+    const customerEmail = readActionText(form, "customerEmail", 254) || "";
+    const customerWhatsappInput = readActionText(form, "customerWhatsapp", 40) || "";
+    const customerWhatsapp = customerWhatsappInput.replace(/\D/g, "");
     if (!isValidJobId(jobId) || !Number.isInteger(version) || version < 1) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    if (customerName.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail) ||
+      customerWhatsapp.length < 10 || customerWhatsapp.length > 15) {
       return json({ error: "invalid_studio_input" }, 400);
     }
     let job = await getJob(adminClient, jobId, sessionId);
@@ -1375,10 +1474,10 @@ async function handleRequest(request: Request): Promise<Response> {
     const hasVersion = (candidate: JobRow) => Array.isArray(candidate.art_versions) &&
       candidate.art_versions.some((item) => item.version === version);
     const alreadyQueued = (candidate: JobRow) =>
-      ["mockup_left_pending", "mockup_right_pending"].includes(candidate.status) &&
+      ["mockup_pair_pending", "mockup_left_pending", "mockup_right_pending"].includes(candidate.status) &&
       candidate.input?.mockupTargetVersion === version &&
       candidate.input?.mockupReferencePaths?.version === version;
-    if (!hasVersion(job)) return json({ error: "studio_job_conflict" }, 409);
+    if (!hasVersion(job)) return json({ error: "studio_art_version_not_found" }, 409);
     if (alreadyQueued(job)) return json(await jobSnapshot(adminClient, url, job), 202);
     if (job.status !== "needs_review") return json({ error: "studio_job_conflict" }, 409);
     // A request already finishing the old terminal-state poll can briefly mark
@@ -1391,6 +1490,28 @@ async function handleRequest(request: Request): Promise<Response> {
       if (alreadyQueued(job)) return json(await jobSnapshot(adminClient, url, job), 202);
       if (job.status !== "needs_review") return json({ error: "studio_job_conflict" }, 409);
     }
+    if (job.processing) {
+      const { data: released, error: releaseError } = await adminClient.from(TABLE)
+        .update({ processing: false, processing_started_at: null, updated_at: new Date().toISOString() })
+        .eq("id", job.id)
+        .eq("guest_session_id", sessionId)
+        .eq("updated_at", job.updated_at)
+        .eq("status", "needs_review")
+        .eq("processing", true)
+        .select("*")
+        .maybeSingle();
+      if (releaseError) return json({ error: "studio_job_lookup_failed" }, 503);
+      if (released) {
+        job = released as JobRow;
+      } else {
+        const current = await getJob(adminClient, jobId, sessionId);
+        if (!current) return json({ error: "studio_job_not_found" }, 404);
+        job = current;
+      }
+      if (alreadyQueued(job)) return json(await jobSnapshot(adminClient, url, job), 202);
+      if (job.status !== "needs_review") return json({ error: "studio_job_conflict" }, 409);
+      if (!hasVersion(job)) return json({ error: "studio_art_version_not_found" }, 409);
+    }
     if (job.processing) return json({ error: "studio_mockup_job_busy" }, 409);
 
     let leftReference: ReferenceImage;
@@ -1401,10 +1522,6 @@ async function handleRequest(request: Request): Promise<Response> {
     } catch {
       return json({ error: "invalid_studio_input" }, 400);
     }
-    const rateDecision = await checkPublicStartLimit(adminClient, request);
-    if (rateDecision === "limited") return json({ error: "studio_rate_limited" }, 429);
-    if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
-
     const stamp = Date.now() + "-" + crypto.randomUUID();
     const leftPath = job.id + "/mockup-reference-v" + version + "-left-" + stamp + ".webp";
     const rightPath = job.id + "/mockup-reference-v" + version + "-right-" + stamp + ".webp";
@@ -1440,12 +1557,13 @@ async function handleRequest(request: Request): Promise<Response> {
           updated = await writeJob(adminClient, job.id, sessionId, {
             input: {
               ...currentJob.input,
+              customerContact: { name: customerName, email: customerEmail, whatsapp: customerWhatsapp },
               mockupTargetVersion: version,
               mockupReferencePaths: { version, leftPath, rightPath },
             },
             mockups: (Array.isArray(currentJob.mockups) ? currentJob.mockups : [])
               .filter((asset) => asset.version !== version),
-            status: "mockup_left_pending",
+            status: "mockup_pair_pending",
             error_code: null,
           }, currentJob.updated_at);
           oldMockups = (Array.isArray(currentJob.mockups) ? currentJob.mockups : [])

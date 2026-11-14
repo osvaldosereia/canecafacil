@@ -22,6 +22,7 @@ type SavedCreationConfiguration = {
   compiledPrompt: string;
 };
 type ArtVersion = Asset & {
+  variantIndex?: number;
   source: 'initial' | 'operator_edit' | 'quality_gate' | 'operator_upload';
   parentVersion: number | null;
   instruction: string | null;
@@ -31,7 +32,8 @@ type ArtVersion = Asset & {
   configuration?: SavedCreationConfiguration;
 };
 type ReusedConfiguration = { version: number; side: MugArtSide; configuration: SavedCreationConfiguration };
-type MockupAsset = Asset & { side: MugArtSide };
+type MockupAsset = Asset & { side: MugArtSide | 'pair' };
+type CustomerContact = { name: string; email: string; whatsapp: string };
 type QualityReview = {
   approved: boolean;
   score: number;
@@ -54,6 +56,7 @@ interface Job {
   generationSide?: GenerationSide;
   referenceUrl?: string | null;
   processing?: boolean;
+  customerContact?: CustomerContact | null;
   art: Asset | null;
   artVersions: ArtVersion[];
   validation: QualityReview | null;
@@ -90,26 +93,28 @@ function getStudioSessionId(): string {
 }
 
 const statusText: Record<string, string> = {
-  art_pending: 'Criando a arte para impressão…',
+  art_pending: 'Criando três opções de arte para impressão…',
   review_pending: 'Executando revisão visual solicitada…',
   correction_pending: 'Aplicando o ajuste solicitado…',
   mockup_front_pending: 'Criando a prévia com a alça à esquerda…',
   mockup_back_pending: 'Criando a prévia com a alça à direita…',
   mockup_left_pending: 'Criando a prévia com a alça à esquerda…',
   mockup_right_pending: 'Criando a prévia com a alça à direita…',
+  mockup_pair_pending: 'Criando uma imagem quadrada com as duas vistas da caneca…',
   needs_review: 'Arte pronta para sua revisão',
   failed: 'Esta etapa não foi concluída',
 };
 const apiErrors: Record<string, string> = {
   studio_session_required: 'Atualize a página e entre novamente.',
   studio_origin_not_allowed: 'Abra o Caneca 360 pelo site do Caneca Fácil.',
-  studio_rate_limited: 'Você atingiu o limite de 5 ações com OpenAI em 24 horas. Tente novamente mais tarde.',
+  studio_rate_limited: 'Você atingiu o limite de revisões visuais nas últimas 24 horas. Tente novamente mais tarde.',
   studio_rate_limit_unavailable: 'A proteção de uso está indisponível. Tente novamente em alguns minutos.',
   openai_provider_secret_unavailable: 'A conexão OpenAI existente não está disponível.',
   invalid_studio_input: 'Confira os campos e tente novamente.',
   studio_print_not_approved: 'Aprove uma versão antes de imprimir.',
   studio_print_quantity_complete: 'A quantidade aprovada já foi impressa. Use “Reimprimir” e informe o motivo.',
   studio_job_conflict: 'O projeto mudou em outra ação. Atualize a tela e tente novamente.',
+  studio_art_version_not_found: 'A versão selecionada não está mais disponível no projeto. Reabra uma versão do histórico e tente novamente.',
   studio_mockup_job_busy: 'A arte ainda está sendo atualizada. Aguarde alguns segundos e tente gerar as prévias novamente.',
   studio_asset_upload_failed: 'Não foi possível preparar os arquivos das prévias. Tente novamente.',
   studio_job_start_failed: 'Não foi possível iniciar a criação.',
@@ -194,6 +199,9 @@ export function StudioPage({ client }: StudioPageProps) {
   const [reusedConfiguration, setReusedConfiguration] = useState<ReusedConfiguration | null>(null);
   const [excludedReusedCommandIds, setExcludedReusedCommandIds] = useState<string[]>([]);
   const [job, setJob] = useState<Job | null>(null);
+  const [customerName, setCustomerName] = useState('');
+  const [customerEmail, setCustomerEmail] = useState('');
+  const [customerWhatsapp, setCustomerWhatsapp] = useState('');
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [latestVersionSeen, setLatestVersionSeen] = useState<number | null>(null);
@@ -296,6 +304,15 @@ export function StudioPage({ client }: StudioPageProps) {
 
   function acceptJob(next: Job | null, forceLatest = false) {
     setJob(next);
+    if (forceLatest) {
+      setCustomerName(next?.customerContact?.name || '');
+      setCustomerEmail(next?.customerContact?.email || '');
+      setCustomerWhatsapp(next?.customerContact?.whatsapp || '');
+    } else if (next?.customerContact) {
+      setCustomerName(next.customerContact.name || '');
+      setCustomerEmail(next.customerContact.email || '');
+      setCustomerWhatsapp(next.customerContact.whatsapp || '');
+    }
     const newest = next?.artVersions?.at(-1)?.version ?? null;
     if (forceLatest || (newest !== null && newest !== latestVersionSeen)) {
       setLatestVersionSeen(newest);
@@ -444,6 +461,9 @@ export function StudioPage({ client }: StudioPageProps) {
     setReusedConfiguration(null);
     setExcludedReusedCommandIds([]);
     setSelectedQuickCommands([]);
+    setCustomerName('');
+    setCustomerEmail('');
+    setCustomerWhatsapp('');
     setEditInstruction('');
     setEditSide('both');
     setQuantity('1');
@@ -535,6 +555,12 @@ export function StudioPage({ client }: StudioPageProps) {
 
   async function generateMockups() {
     if (!job || !chosenArt || selectedVersion === null || job.status !== 'needs_review' || mockupRequestRef.current) return;
+    const normalizedWhatsapp = customerWhatsapp.replace(/\D/g, '');
+    if (customerName.trim().length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail.trim()) ||
+      normalizedWhatsapp.length < 10 || normalizedWhatsapp.length > 15) {
+      setError('Informe seu nome, um e-mail válido e um WhatsApp com DDD para gerar a prévia da caneca.');
+      return;
+    }
     mockupRequestRef.current = true;
     setBusy(true);
     setError(null);
@@ -548,6 +574,9 @@ export function StudioPage({ client }: StudioPageProps) {
       form.set('action', 'mockups');
       form.set('jobId', job.projectId);
       form.set('version', String(selectedVersion));
+      form.set('customerName', customerName.trim());
+      form.set('customerEmail', customerEmail.trim());
+      form.set('customerWhatsapp', normalizedWhatsapp);
       form.set('leftReference', leftReference);
       form.set('rightReference', rightReference);
       let updated: Job;
@@ -557,8 +586,8 @@ export function StudioPage({ client }: StudioPageProps) {
         if (!(cause instanceof Error) || cause.message !== 'studio_job_conflict') throw cause;
         const latest = await callStudio(client, { action: 'load', jobId: job.projectId }) as Job;
         acceptJob(latest);
-        if (latest.status === 'mockup_left_pending' || latest.status === 'mockup_right_pending') {
-          setNotice('As prévias desta versão já estão em processamento.');
+        if (latest.status === 'mockup_pair_pending' || latest.status === 'mockup_left_pending' || latest.status === 'mockup_right_pending') {
+          setNotice('A imagem quadrada com as duas vistas desta versão já está em processamento.');
           return;
         }
         if (latest.status !== 'needs_review' || latest.processing ||
@@ -566,7 +595,7 @@ export function StudioPage({ client }: StudioPageProps) {
         updated = await callStudio(client, form) as Job;
       }
       acceptJob(updated);
-      setNotice('Pré-vias iniciadas: alça à esquerda com a metade esquerda da arte; alça à direita com a metade direita.');
+      setNotice('Prévia iniciada: alça à esquerda na parte superior e alça à direita na parte inferior, cada uma com seu lado correto da arte.');
     } catch (cause) {
       setError(errorMessage(cause, 'Não foi possível gerar as prévias.'));
     } finally {
@@ -701,6 +730,8 @@ export function StudioPage({ client }: StudioPageProps) {
   const queuedVersion = job?.printing.approvedVersion ?? null;
   const queuedArt = job?.artVersions.find((version) => version.version === queuedVersion) ?? null;
   const selectedMockups = job?.mockups.filter((asset) => asset.version === selectedVersion) ?? [];
+  const initialOptions = job?.artVersions.filter((version) => Boolean(version.variantIndex)) ?? [];
+  const revisionVersions = job?.artVersions.filter((version) => !version.variantIndex) ?? [];
   const selectedIsLatest = chosenArt?.version === job?.artVersions.at(-1)?.version;
   const restoredConfiguration = job?.artVersions.find((version) => version.version === restoredVersion)?.configuration ?? null;
   const currentSideScales = chosenArt?.configuration?.sizeBySide ?? { left: 100, right: 100 };
@@ -879,7 +910,7 @@ export function StudioPage({ client }: StudioPageProps) {
               <button className="studio-submit" disabled={busy || restoringReference || Boolean(job && !finished(job.status))} type="submit">
                 {restoringReference ? 'Recuperando referência…' : busy ? 'Preparando…' : job && !finished(job.status) ? 'Criação em andamento…' : 'Gerar arte para impressão'}
               </button>
-              <p className="studio-note">Sem login. Limite de 5 ações com OpenAI por IP a cada 24 h. Revisão visual e prévias são opcionais.</p>
+              <p className="studio-note">Gere quantas opções quiser. A revisão visual e a prévia da caneca são opcionais.</p>
             </section>
           </form>
 
@@ -915,8 +946,21 @@ export function StudioPage({ client }: StudioPageProps) {
               </div>
 
               {job.artVersions.length ? <>
-                <div className="studio-version-strip" aria-label="Histórico de versões">
-                  {job.artVersions.map((version) => (
+                {initialOptions.length > 1 ? <div className="studio-options-grid" aria-label="Escolha uma das três opções de arte">
+                  {initialOptions.map((version) => (
+                    <button type="button" key={version.version}
+                      className={'studio-option-card' + (version.version === selectedVersion ? ' is-selected' : '')}
+                      aria-pressed={version.version === selectedVersion}
+                      disabled={busy || restoringReference}
+                      onClick={() => void chooseArtVersion(version.version)}>
+                      <img src={version.url} alt={`Opção ${version.variantIndex} de arte para a caneca`} />
+                      <span><strong>Opção {version.variantIndex}</strong><small>{version.version === selectedVersion ? 'Selecionada' : 'Escolher esta arte'}</small></span>
+                    </button>
+                  ))}
+                </div> : null}
+
+                {revisionVersions.length ? <div className="studio-version-strip" aria-label="Versões e ajustes">
+                  {revisionVersions.map((version) => (
                     <button type="button" key={version.version}
                       className={'studio-version-chip' + (version.version === selectedVersion ? ' is-selected' : '')}
                       disabled={busy || restoringReference}
@@ -924,7 +968,7 @@ export function StudioPage({ client }: StudioPageProps) {
                       <span>v{version.version}</span><small>{sourceText(version)}</small>
                     </button>
                   ))}
-                </div>
+                </div> : null}
 
                 {chosenArt ? <figure className="studio-art">
                   <img src={chosenArt.url} alt={`Arte panorâmica para impressão, versão ${chosenArt.version}`} />
@@ -1047,13 +1091,18 @@ export function StudioPage({ client }: StudioPageProps) {
                   </section>
 
                   <section className="studio-action-card studio-optional-card">
-                    <div className="studio-section-heading"><div><h3>Ver a arte na caneca</h3><p>O mockup da esquerda usa a metade esquerda; o da direita usa a metade direita.</p></div></div>
+                    <div className="studio-section-heading"><div><h3>Ver a arte na caneca</h3><p>Uma imagem quadrada: alça à esquerda em cima e alça à direita embaixo, cada vista com o lado correto da arte.</p></div></div>
+                    <div className="studio-contact-grid">
+                      <label className="studio-field"><span>Seu nome</span><input autoComplete="name" value={customerName} onChange={(event) => setCustomerName(event.currentTarget.value)} maxLength={120} /></label>
+                      <label className="studio-field"><span>E-mail</span><input type="email" autoComplete="email" value={customerEmail} onChange={(event) => setCustomerEmail(event.currentTarget.value)} maxLength={254} /></label>
+                      <label className="studio-field"><span>WhatsApp</span><input type="tel" inputMode="tel" autoComplete="tel" value={customerWhatsapp} onChange={(event) => setCustomerWhatsapp(event.currentTarget.value)} maxLength={40} placeholder="(65) 99999-9999" /></label>
+                    </div>
                     <button className="studio-quiet-button" type="button" disabled={busy || job.status !== 'needs_review'}
-                      onClick={() => void generateMockups()}>Gerar mockups com as duas alças</button>
+                      onClick={() => void generateMockups()}>Gerar prévia quadrada da caneca</button>
                     {selectedMockups.length ? <div className="studio-mockups">
-                      {selectedMockups.map((asset) => <figure key={`${asset.version}-${asset.side}`}>
-                        <img src={asset.url} alt={`Mockup de caneca com a alça à ${asset.side === 'left' ? 'esquerda' : 'direita'}`} />
-                        <figcaption><span>Alça à {asset.side === 'left' ? 'esquerda' : 'direita'}</span>
+                      {selectedMockups.map((asset) => <figure key={`${asset.version}-${asset.side}`} className={asset.side === 'pair' ? 'studio-mockup-pair' : ''}>
+                        <img src={asset.url} alt={asset.side === 'pair' ? 'Imagem quadrada com a caneca de alça à esquerda em cima e de alça à direita embaixo' : `Mockup de caneca com a alça à ${asset.side === 'left' ? 'esquerda' : 'direita'}`} />
+                        <figcaption><span>{asset.side === 'pair' ? 'Duas vistas · imagem quadrada' : `Alça à ${asset.side === 'left' ? 'esquerda' : 'direita'}`}</span>
                           <a href={asset.url} target="_blank" rel="noreferrer" download>Abrir</a></figcaption>
                       </figure>)}
                     </div> : null}
