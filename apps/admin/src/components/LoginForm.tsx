@@ -23,9 +23,9 @@ export function LoginForm({ loading, error, onSubmit }: LoginFormProps) {
   return (
     <main className="login-shell">
       <section className="login-card" aria-labelledby="login-title">
-        <p className="eyebrow">Admin</p>
-        <h1 id="login-title">Entrar no Caneca Fácil</h1>
-        <p>Acompanhe projetos, briefing, arte e mockup em um só lugar.</p>
+        <p className="eyebrow">Admin CanecaFácil</p>
+        <h1 id="login-title">Entrar no painel</h1>
+        <p>Gerencie clientes, solicitações, artes e impressão.</p>
 
         <form onSubmit={handleSubmit}>
           <label htmlFor="email">E-mail</label>

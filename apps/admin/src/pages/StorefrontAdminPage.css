@@ -1,0 +1,92 @@
+.storefront-admin{max-width:1120px;margin:0 auto;color:#2c3b31}
+.storefront-admin-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:4px 0 23px}
+.storefront-admin-kicker{margin:0 0 7px;color:#839084;font-size:9px;font-weight:800;letter-spacing:.14em}
+.storefront-admin-heading h1{margin:0;color:#2d4033;font-size:clamp(25px,4vw,35px);letter-spacing:-.05em}
+.storefront-admin-heading p:not(.storefront-admin-kicker){margin:7px 0 0;color:#77837a;font-size:12px}
+.storefront-admin-refresh{padding:9px 13px;border:1px solid #dfe6de;border-radius:10px;color:#45694d;background:#fff;font-size:11px;font-weight:700;cursor:pointer}
+.storefront-admin-refresh:disabled{opacity:.55;cursor:not-allowed}
+.storefront-admin-tabs{display:flex;gap:6px;overflow:auto;margin-bottom:16px;padding:4px;border:1px solid #e7ebe5;border-radius:13px;background:#fff}
+.storefront-admin-tabs button{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 14px;border:0;border-radius:9px;color:#718076;background:transparent;font-size:12px;font-weight:650;cursor:pointer}
+.storefront-admin-tabs button.is-active{color:#365c40;background:#edf4eb}
+.storefront-admin-tabs b{display:grid;min-width:20px;height:20px;place-items:center;border-radius:99px;color:#6e8170;background:#f1f3ee;font-size:10px}
+.storefront-retention-note{margin:-6px 0 13px;color:#8a9288;font-size:9px;line-height:1.45}
+.storefront-admin-alert,.storefront-admin-notice{margin:12px 0;padding:11px 13px;border-radius:10px;font-size:12px}
+.storefront-admin-alert{color:#8b3f35;background:#fff0ec}.storefront-admin-notice{color:#35613f;background:#eff6ed}
+.storefront-admin-empty{display:flex;min-height:125px;align-items:center;justify-content:center;flex-direction:column;gap:7px;padding:20px;border:1px dashed #dfe6dc;border-radius:14px;color:#758177;background:#fff;text-align:center;font-size:12px}
+.storefront-admin-empty strong{color:#425347;font-size:14px}
+.storefront-orders{display:grid;gap:14px}
+.storefront-order{display:grid;grid-template-columns:minmax(210px,.72fr) minmax(0,1.4fr);overflow:hidden;border:1px solid #e7ebe5;border-radius:16px;background:#fff;box-shadow:0 8px 24px rgb(42 58 46 / 4%)}
+.storefront-order-visual{display:grid;min-height:220px;place-items:center;background:#f2f2ed}
+.storefront-order-visual img{width:100%;height:100%;max-height:300px;object-fit:contain}
+.storefront-order-visual span{font-size:58px}
+.storefront-order-content{min-width:0;padding:17px 18px}
+.storefront-order-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.storefront-order-title small{color:#899187;font-size:9px;text-transform:uppercase;letter-spacing:.08em}
+.storefront-order-title h2{margin:5px 0 0;color:#2e3c32;font-size:16px;line-height:1.25;letter-spacing:-.03em}
+.storefront-order-title select{max-width:150px;padding:8px 9px;border:1px solid #dfe6dc;border-radius:9px;color:#46674d;background:#fff;font-size:10px}
+.storefront-contact{display:flex;align-items:center;flex-wrap:wrap;gap:8px 13px;margin:12px 0;color:#647269;font-size:11px}
+.storefront-contact strong{color:#34473a}
+.storefront-contact a{color:#577660;text-decoration:none}
+.storefront-contact a:hover{text-decoration:underline}
+.storefront-request-summary{display:grid;gap:4px;margin:10px 0;padding:10px 11px;border:1px solid #e9eee6;border-radius:10px;background:#fafbf8}
+.storefront-request-summary span{color:#849085;font-size:9px;font-weight:750;text-transform:uppercase;letter-spacing:.07em}
+.storefront-request-summary strong{color:#34483a;font-size:12px;line-height:1.4;overflow-wrap:anywhere}
+.storefront-request-summary small{color:#879088;font-size:9px}
+.storefront-order-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.storefront-admin-button{display:inline-flex;min-height:38px;align-items:center;justify-content:center;padding:9px 12px;border:1px solid #4d7958;border-radius:9px;color:#fff;background:#4d7958;font-size:10px;font-weight:750;text-decoration:none;cursor:pointer}
+.storefront-admin-button.is-secondary{border-color:#dce5db;color:#456a4d;background:#f8faf7}
+.storefront-admin-button:disabled{opacity:.5;cursor:not-allowed}
+.storefront-notes{display:grid;gap:5px;margin-top:11px;color:#708076;font-size:10px;font-weight:700}
+.storefront-notes textarea{width:100%;resize:vertical;min-height:54px;padding:9px;border:1px solid #e0e6de;border-radius:9px;color:#344238;background:#fff;font-size:11px}
+.storefront-save-note{padding:7px 0;border:0;color:#4d7857;background:transparent;font-size:10px;font-weight:750;cursor:pointer}
+.storefront-save-note:disabled{opacity:.55;cursor:not-allowed}
+.storefront-customer-list{display:grid;gap:9px}
+.storefront-customer{display:flex;min-width:0;align-items:center;gap:12px;padding:13px;border:1px solid #e7ebe5;border-radius:13px;background:#fff}
+.storefront-customer-avatar{display:grid;width:38px;height:38px;flex:0 0 auto;place-items:center;border-radius:14px;color:#477350;background:#edf4ea;font-size:16px;font-weight:800}
+.storefront-customer-details{display:grid;min-width:0;flex:1;gap:4px}
+.storefront-customer-details strong{overflow:hidden;color:#34463a;font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.storefront-customer-details span,.storefront-customer-details a{overflow:hidden;color:#7b867d;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+.storefront-customer-details a{color:#53765a;text-decoration:none}
+.storefront-customer-details input{max-width:300px;padding:7px 8px;border:1px solid #dfe5dc;border-radius:8px;font-size:11px}
+.storefront-customer-meta{display:grid;gap:4px;color:#819084;font-size:9px;text-align:right;white-space:nowrap}
+.storefront-customer-meta strong{color:#4f6955;font-size:10px}
+.storefront-customer-actions{display:flex;gap:6px}
+.storefront-customer-actions button{padding:7px 8px;border:1px solid #dfe5dc;border-radius:8px;color:#54715a;background:#fff;font-size:10px;cursor:pointer}
+.storefront-reference-manager{display:grid;gap:18px}
+.storefront-reference-form{display:grid;gap:14px;padding:18px;border:1px solid #e7ebe5;border-radius:14px;background:#fff}
+.storefront-reference-form h2{margin:0;color:#35483a;font-size:16px}
+.storefront-reference-form p:not(.storefront-admin-kicker){margin:5px 0 0;color:#7a857c;font-size:11px;line-height:1.5}
+.storefront-reference-fields{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:10px}
+.storefront-reference-fields label{display:grid;align-content:start;gap:6px;color:#536258;font-size:10px;font-weight:700}
+.storefront-reference-fields input:not([type=file]){width:100%;min-height:39px;padding:9px;border:1px solid #e0e6de;border-radius:8px;font-size:11px}
+.storefront-file-input input{max-width:100%;font-size:10px}
+.storefront-reference-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.storefront-reference{overflow:hidden;border:1px solid #e7ebe5;border-radius:12px;background:#fff}
+.storefront-reference img{display:block;width:100%;aspect-ratio:1;object-fit:cover;background:#f2f2ed}
+.storefront-reference>div{display:grid;gap:3px;padding:8px 9px}
+.storefront-reference strong{overflow:hidden;color:#3e5043;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+.storefront-reference small{color:#839083;font-size:9px}
+.storefront-reference button{margin:0 8px 8px;padding:6px 0;border:0;color:#a15346;background:transparent;font-size:9px;font-weight:700;cursor:pointer}
+.storefront-reference button:disabled{opacity:.5;cursor:not-allowed}
+@media(max-width:760px){
+  .storefront-admin-heading{align-items:flex-start}
+  .storefront-admin-heading h1{font-size:25px}
+  .storefront-order{grid-template-columns:1fr}
+  .storefront-order-visual{min-height:0;aspect-ratio:1.3}
+  .storefront-order-content{padding:14px}
+  .storefront-contact{flex-direction:column;align-items:flex-start;gap:6px}
+  .storefront-reference-fields{grid-template-columns:1fr 1fr}
+  .storefront-file-input{grid-column:1/-1}
+  .storefront-reference-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .storefront-customer{flex-wrap:wrap;align-items:flex-start}
+  .storefront-customer-details{flex-basis:calc(100% - 54px)}
+  .storefront-customer-meta{margin-left:50px;text-align:left}
+}
+@media(max-width:420px){
+  .storefront-reference-fields{grid-template-columns:1fr}
+  .storefront-file-input{grid-column:auto}
+  .storefront-reference-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .storefront-order-title{flex-direction:column}
+  .storefront-order-title select{max-width:100%}
+  .storefront-order-actions{flex-direction:column;align-items:stretch}
+}

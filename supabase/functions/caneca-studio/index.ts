@@ -58,7 +58,18 @@ type StudioInput = {
   forbiddenElements?: string[];
   compositionNotes?: string | null;
   latestEditInstruction?: string | null;
-  customerContact?: { name: string; email: string; whatsapp: string } | null;
+  customerContact?: { name: string; email: string; whatsapp: string; customerId?: string | null } | null;
+  publicRequest?: {
+    text: string;
+    kind: "name" | "phrase";
+    referenceId: string;
+    referenceTitle: string;
+    referenceCategory: string;
+  } | null;
+  customerSavedVersion?: number | null;
+  customerSavedAt?: string | null;
+  orderStatus?: string | null;
+  adminNotes?: string | null;
   reviewRequested?: boolean;
   pendingEdit?: { baseVersion: number; instruction: string; side?: GenerationSide } | null;
   mockupTargetVersion?: number | null;
@@ -86,6 +97,7 @@ type ArtVersion = {
   parentVersion?: number | null;
   instruction?: string | null;
   createdAt?: string;
+  archivedAt?: string | null;
   generationSide?: GenerationSide;
   updatedSides?: Side[];
   configuration?: SavedCreationConfiguration;
@@ -368,6 +380,27 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
 
   const title = readText(form, "title", 100) || ("Caneca - " + artDescription.slice(0, 80));
   const selectedCommands = readSelectedCommands(form);
+  const publicRequestText = readText(form, "publicRequest", 1600);
+  let publicRequest: StudioInput["publicRequest"] = null;
+  if (publicRequestText) {
+    try {
+      const value = JSON.parse(publicRequestText) as Record<string, unknown>;
+      if (typeof value.text !== "string" || value.text.trim().length < 1 || value.text.length > 120 ||
+        (value.kind !== "name" && value.kind !== "phrase") || typeof value.referenceId !== "string" ||
+        typeof value.referenceTitle !== "string" || typeof value.referenceCategory !== "string") {
+        throw new Error("invalid_studio_input");
+      }
+      publicRequest = {
+        text: value.text.trim(),
+        kind: value.kind,
+        referenceId: value.referenceId.slice(0, 80),
+        referenceTitle: value.referenceTitle.trim().slice(0, 120),
+        referenceCategory: value.referenceCategory.trim().slice(0, 80),
+      };
+    } catch {
+      throw new Error("invalid_studio_input");
+    }
+  }
   return {
     input: {
       title,
@@ -375,6 +408,7 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
       artDescription,
       generationSide,
       mandatoryText: readList(form, "mandatoryText"),
+      publicRequest,
       selectedCommands,
       sizeBySide: { left: 100, right: 100 },
       occasion: readText(form, "occasion", 120),
@@ -799,6 +833,7 @@ async function jobSnapshot(
       parentVersion: version.parentVersion ?? null,
       instruction: version.instruction ?? null,
       createdAt: version.createdAt ?? null,
+      archivedAt: version.archivedAt ?? null,
       generationSide: version.generationSide || job.input?.generationSide || "both",
       updatedSides: version.updatedSides || [],
       configuration: version.configuration || {
@@ -831,6 +866,12 @@ async function jobSnapshot(
     status: job.status,
     generationSide: job.input?.generationSide || "both",
     customerContact: job.input?.customerContact || null,
+    customerSavedVersion: job.input?.customerSavedVersion || null,
+    customerSavedAt: job.input?.customerSavedAt || null,
+    orderStatus: job.input?.orderStatus || null,
+    adminNotes: job.input?.adminNotes || null,
+    publicRequest: job.input?.publicRequest || null,
+    mandatoryText: Array.isArray(job.input?.mandatoryText) ? job.input.mandatoryText : [],
     referenceUrl,
     processing: job.processing,
     art,
@@ -841,6 +882,61 @@ async function jobSnapshot(
     printHistory: Array.isArray(job.input?.printHistory) ? job.input.printHistory : [],
     createdAt: job.created_at,
   };
+}
+
+async function registerPublicCustomer(
+  adminClient: AdminClient,
+  name: string,
+  email: string,
+  whatsappDigits: string,
+): Promise<string | null> {
+  const whatsappE164 = whatsappDigits.length <= 11 ? "+55" + whatsappDigits : "+" + whatsappDigits;
+  try {
+    let { data: customer, error } = await adminClient.from("customers")
+      .select("id,name,primary_whatsapp_e164")
+      .eq("primary_whatsapp_e164", whatsappE164)
+      .maybeSingle();
+    if (error) throw error;
+    if (!customer) {
+      const inserted = await adminClient.from("customers")
+        .insert({ name, primary_whatsapp_e164: whatsappE164 })
+        .select("id,name,primary_whatsapp_e164")
+        .single();
+      if (inserted.error) {
+        const retry = await adminClient.from("customers")
+          .select("id,name,primary_whatsapp_e164")
+          .eq("primary_whatsapp_e164", whatsappE164)
+          .maybeSingle();
+        if (retry.error || !retry.data) throw inserted.error;
+        customer = retry.data;
+      } else {
+        customer = inserted.data;
+      }
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const existingEmail = await adminClient.from("customer_emails")
+      .select("id")
+      .eq("customer_id", customer.id)
+      .eq("email_normalized", normalizedEmail)
+      .maybeSingle();
+    if (!existingEmail.error && !existingEmail.data) {
+      const insertedEmail = await adminClient.from("customer_emails").insert({
+        customer_id: customer.id,
+        email: email.trim(),
+        email_normalized: normalizedEmail,
+        verification_status: "observed",
+        is_primary: false,
+        source: "observed",
+        evidence: { origin: "canecafacil_public" },
+      });
+      if (insertedEmail.error) console.error("[caneca-studio] customer email was not linked");
+    }
+    return customer.id as string;
+  } catch {
+    console.error("[caneca-studio] customer contact could not be linked to the existing registry");
+    return null;
+  }
 }
 
 async function getJob(
@@ -855,6 +951,31 @@ async function getJob(
     .maybeSingle();
   if (error) throw new Error("studio_job_lookup_failed");
   return data as JobRow | null;
+}
+
+async function getAdminJob(adminClient: AdminClient, jobId: string): Promise<JobRow | null> {
+  const { data, error } = await adminClient.from(TABLE).select("*")
+    .eq("id", jobId)
+    .is("created_by", null)
+    .maybeSingle();
+  if (error) throw new Error("studio_job_lookup_failed");
+  return data as JobRow | null;
+}
+
+async function writeAdminJob(
+  adminClient: AdminClient,
+  jobId: string,
+  patch: Record<string, unknown>,
+  expectedUpdatedAt?: string,
+): Promise<JobRow> {
+  let query = adminClient.from(TABLE)
+    .update({ ...patch, processing: false, processing_started_at: null, updated_at: new Date().toISOString() })
+    .eq("id", jobId)
+    .is("created_by", null);
+  if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
+  const { data, error } = await query.select("*").maybeSingle();
+  if (error || !data) throw new Error("studio_job_lookup_failed");
+  return data as JobRow;
 }
 
 async function startJob(
@@ -1200,16 +1321,328 @@ async function checkPublicStartLimit(
   }
 }
 
+type CatalogEntry = { id: string; title: string; category: string; path: string; createdAt: string };
+const CATALOG_INDEX_PATH = "catalog/index.json";
+
+async function readCatalogIndex(adminClient: AdminClient): Promise<CatalogEntry[]> {
+  const { data, error } = await adminClient.storage.from(BUCKET).download(CATALOG_INDEX_PATH);
+  if (error || !data) {
+    const detail = error as { statusCode?: string; message?: string } | null;
+    if (detail?.statusCode === "404" || /not found|does not exist/i.test(detail?.message || "")) return [];
+    throw new Error("studio_catalog_lookup_failed");
+  }
+  try {
+    const parsed = JSON.parse(await data.text());
+    if (!Array.isArray(parsed)) throw new Error("invalid_catalog");
+    return parsed.filter((item) => item && typeof item.id === "string" && typeof item.path === "string") as CatalogEntry[];
+  } catch {
+    throw new Error("studio_catalog_lookup_failed");
+  }
+}
+
+async function writeCatalogIndex(adminClient: AdminClient, entries: CatalogEntry[]): Promise<void> {
+  const bytes = new TextEncoder().encode(JSON.stringify(entries));
+  const { error } = await adminClient.storage.from(BUCKET).upload(CATALOG_INDEX_PATH, bytes, {
+    contentType: "application/json",
+    upsert: true,
+  });
+  if (error) throw new Error("studio_catalog_save_failed");
+}
+
+async function catalogWithSignedUrls(
+  adminClient: AdminClient,
+  url: string,
+  entries: CatalogEntry[],
+): Promise<Array<Omit<CatalogEntry, "path" | "createdAt"> & { url: string }>> {
+  return await Promise.all(entries.map(async (item) => {
+    const { data, error } = await adminClient.storage.from(BUCKET).createSignedUrl(item.path, SIGNED_URL_TTL);
+    if (error || !data?.signedUrl) throw new Error("studio_catalog_lookup_failed");
+    return { id: item.id, title: item.title, category: item.category, url: normalizeSignedUrl(url, data.signedUrl) };
+  }));
+}
+
+async function authorizeAdminRequest(request: Request, adminClient: AdminClient): Promise<Response | null> {
+  const token = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!token) return json({ error: "admin_auth_required" }, 401);
+  const { data, error } = await adminClient.auth.getUser(token);
+  if (error || !data.user) return json({ error: "admin_auth_required" }, 401);
+  const membership = await adminClient.from("admin_membership_lookup")
+    .select("user_id")
+    .eq("user_id", data.user.id)
+    .maybeSingle();
+  if (membership.error) return json({ error: "admin_access_unavailable" }, 503);
+  if (!membership.data) return json({ error: "admin_access_required" }, 403);
+  return null;
+}
+
+async function getAdminPublicJobs(adminClient: AdminClient): Promise<JobRow[]> {
+  const { data, error } = await adminClient.from(TABLE).select("*")
+    .is("created_by", null)
+    .order("updated_at", { ascending: false })
+    .limit(500);
+  if (error) throw new Error("studio_job_lookup_failed");
+  return (data || []).map((item) => item as JobRow);
+}
+
+function savedPublicJobs(jobs: JobRow[]): JobRow[] {
+  return jobs.filter((job) => Number.isInteger(job.input?.customerSavedVersion) && Number(job.input?.customerSavedVersion) > 0);
+}
+
+async function handleAdminAction(
+  request: Request,
+  action: string,
+  body: Record<string, unknown>,
+  form: FormData | null,
+): Promise<Response> {
+  let clients: ReturnType<typeof serviceClients>;
+  try { clients = serviceClients(); } catch { return json({ error: "studio_job_lookup_failed" }, 503); }
+  const { adminClient, url } = clients;
+  const denied = await authorizeAdminRequest(request, adminClient);
+  if (denied) return denied;
+
+  if (action === "admin_catalog_list") {
+    try {
+      const items = await catalogWithSignedUrls(adminClient, url, await readCatalogIndex(adminClient));
+      return json({ items });
+    } catch { return json({ error: "studio_catalog_lookup_failed" }, 500); }
+  }
+
+  if (action === "admin_orders") {
+    try {
+      const jobs = savedPublicJobs(await getAdminPublicJobs(adminClient));
+      const orders = await Promise.all(jobs.slice(0, 150).map((job) => jobSnapshot(adminClient, url, job, true)));
+      return json({ orders });
+    } catch {
+      return json({ error: "studio_job_lookup_failed" }, 500);
+    }
+  }
+
+  if (action === "admin_archive_candidates") {
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const { data, error } = await adminClient.from(TABLE).select("id,created_at,input,art_versions")
+      .is("created_by", null)
+      .lt("created_at", new Date(cutoff).toISOString())
+      .order("created_at", { ascending: true })
+      .limit(500);
+    if (error) return json({ error: "studio_job_lookup_failed" }, 500);
+    const candidates: Array<{ jobId: string; version: number; url: string; createdAt: string }> = [];
+    for (const row of data || []) {
+      const input = row.input as StudioInput;
+      if (!input?.publicRequest) continue;
+      const versions = Array.isArray(row.art_versions) ? row.art_versions as ArtVersion[] : [];
+      for (const version of versions) {
+        const createdAt = version.createdAt || row.created_at;
+        if (version.archivedAt || Date.parse(createdAt) >= cutoff) continue;
+        const { data: signed, error: signedError } = await adminClient.storage.from(BUCKET)
+          .createSignedUrl(version.path, SIGNED_URL_TTL);
+        if (signedError || !signed?.signedUrl) continue;
+        candidates.push({ jobId: row.id, version: version.version, url: normalizeSignedUrl(url, signed.signedUrl), createdAt });
+        if (candidates.length >= 50) break;
+      }
+      if (candidates.length >= 50) break;
+    }
+    return json({ candidates, retentionDays: 30 });
+  }
+
+  if (action === "admin_archive_art") {
+    if (!form) return json({ error: "invalid_studio_input" }, 400);
+    const jobId = readActionText(form, "jobId", 36) || "";
+    const versionNumber = Number(readActionText(form, "version", 12) || "");
+    if (!isValidJobId(jobId) || !Number.isInteger(versionNumber) || versionNumber < 1) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    let archived: ReferenceImage;
+    try { archived = await readUploadedImage(form, "archiveArt", 2400, 960); }
+    catch { return json({ error: "invalid_studio_input" }, 400); }
+    if (archived.mimeType !== "image/webp" || archived.bytes.byteLength > 300_000) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    const job = await getAdminJob(adminClient, jobId);
+    if (!job || !job.input?.publicRequest) return json({ error: "studio_job_not_found" }, 404);
+    const versions = Array.isArray(job.art_versions) ? [...job.art_versions] : [];
+    const index = versions.findIndex((item) => item.version === versionNumber);
+    if (index < 0) return json({ error: "studio_art_version_not_found" }, 404);
+    const version = versions[index];
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    if (version.archivedAt) return json({ archived: true, alreadyArchived: true });
+    if (Date.parse(version.createdAt || job.created_at) >= cutoff) return json({ error: "studio_archive_not_due" }, 409);
+    const { error: uploadError } = await adminClient.storage.from(BUCKET).upload(version.path, archived.bytes, {
+      contentType: "image/webp",
+      upsert: true,
+    });
+    if (uploadError) return json({ error: "studio_asset_upload_failed" }, 503);
+    versions[index] = { ...version, archivedAt: new Date().toISOString() };
+    try {
+      const updated = await writeAdminJob(adminClient, job.id, { art_versions: versions }, job.updated_at);
+      return json({ archived: true, job: await jobSnapshot(adminClient, url, updated, true) });
+    } catch { return json({ error: "studio_job_conflict" }, 409); }
+  }
+
+  if (action === "admin_customers") {
+    try {
+      const jobs = savedPublicJobs(await getAdminPublicJobs(adminClient));
+      const byCustomer = new Map<string, { id: string | null; name: string; email: string; whatsapp: string; orderCount: number; lastOrderAt: string }>();
+      for (const job of jobs) {
+        const contact = job.input?.customerContact;
+        if (!contact) continue;
+        const key = contact.customerId || contact.whatsapp.replace(/\D/g, "");
+        if (!key) continue;
+        const current = byCustomer.get(key) || {
+          id: contact.customerId || null,
+          name: contact.name,
+          email: contact.email,
+          whatsapp: contact.whatsapp,
+          orderCount: 0,
+          lastOrderAt: job.input.customerSavedAt || job.created_at,
+        };
+        current.orderCount += 1;
+        if (Date.parse(job.input.customerSavedAt || job.created_at) > Date.parse(current.lastOrderAt)) {
+          current.lastOrderAt = job.input.customerSavedAt || job.created_at;
+        }
+        byCustomer.set(key, current);
+      }
+      const entries = Array.from(byCustomer.values());
+      const ids = entries.map((item) => item.id).filter((id): id is string => Boolean(id));
+      if (ids.length) {
+        const [{ data: profiles }, { data: emails }] = await Promise.all([
+          adminClient.from("customers").select("id,name,primary_whatsapp_e164,is_active").in("id", ids),
+          adminClient.from("customer_emails").select("customer_id,email").in("customer_id", ids).eq("verification_status", "observed"),
+        ]);
+        const profilesById = new Map((profiles || []).map((item: any) => [item.id, item]));
+        const emailById = new Map<string, string>();
+        for (const item of emails || []) if (!emailById.has(item.customer_id)) emailById.set(item.customer_id, item.email);
+        for (const entry of entries) {
+          const profile = entry.id ? profilesById.get(entry.id) : null;
+          if (profile) {
+            entry.name = profile.name || entry.name;
+            entry.whatsapp = profile.primary_whatsapp_e164 || entry.whatsapp;
+            entry.email = emailById.get(entry.id!) || entry.email;
+          }
+        }
+      }
+      return json({ customers: entries.sort((a, b) => Date.parse(b.lastOrderAt) - Date.parse(a.lastOrderAt)) });
+    } catch {
+      return json({ error: "studio_customer_lookup_failed" }, 500);
+    }
+  }
+
+  if (action === "admin_update_customer") {
+    const customerId = typeof body.customerId === "string" ? body.customerId : "";
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!isValidJobId(customerId) || name.length < 2 || name.length > 120) return json({ error: "invalid_studio_input" }, 400);
+    const { data, error } = await adminClient.from("customers").update({ name, updated_at: new Date().toISOString() })
+      .eq("id", customerId).select("id,name,primary_whatsapp_e164").maybeSingle();
+    if (error || !data) return json({ error: "studio_customer_update_failed" }, 500);
+    try {
+      const jobs = await getAdminPublicJobs(adminClient);
+      await Promise.all(jobs.filter((job) => job.input?.customerContact?.customerId === customerId).map((job) =>
+        adminClient.from(TABLE).update({
+          input: { ...job.input, customerContact: { ...job.input.customerContact, name } },
+          updated_at: new Date().toISOString(),
+        }).eq("id", job.id).is("created_by", null),
+      ));
+    } catch { /* The customer record remains authoritative if old job snapshots cannot be refreshed. */ }
+    return json({ customer: data });
+  }
+
+  if (action === "admin_update_order") {
+    const jobId = typeof body.jobId === "string" ? body.jobId : "";
+    const orderStatus = typeof body.orderStatus === "string" ? body.orderStatus : "";
+    const adminNotes = typeof body.adminNotes === "string" ? body.adminNotes.trim() : "";
+    const allowedStatuses = ["new", "contacted", "confirmed", "in_production", "ready", "cancelled"];
+    if (!isValidJobId(jobId) || !allowedStatuses.includes(orderStatus) || adminNotes.length > 1000) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    const job = await getAdminJob(adminClient, jobId);
+    if (!job || !job.input?.customerSavedVersion) return json({ error: "studio_job_not_found" }, 404);
+    try {
+      const updated = await writeAdminJob(adminClient, job.id, {
+        input: { ...job.input, orderStatus, adminNotes },
+      }, job.updated_at);
+      return json(await jobSnapshot(adminClient, url, updated, true));
+    } catch { return json({ error: "studio_job_conflict" }, 409); }
+  }
+
+  if (action === "admin_approve_print") {
+    const jobId = typeof body.jobId === "string" ? body.jobId : "";
+    const job = isValidJobId(jobId) ? await getAdminJob(adminClient, jobId) : null;
+    if (!job || !job.input?.customerSavedVersion) return json({ error: "studio_job_not_found" }, 404);
+    const version = Number(body.version || job.input.customerSavedVersion);
+    const quantity = Number(body.quantity || 1);
+    if (version !== job.input.customerSavedVersion || !Number.isInteger(quantity) || quantity < 1 || quantity > 500 ||
+      job.status !== "needs_review" || !job.art_versions.some((item) => item.version === version)) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    const nextInput = archivePrintState(job.input);
+    nextInput.printing = { approvedVersion: version, quantity, completed: 0, status: "ready", approvedAt: new Date().toISOString(), reprints: [] };
+    try {
+      const updated = await writeAdminJob(adminClient, job.id, { input: nextInput }, job.updated_at);
+      return json(await jobSnapshot(adminClient, url, updated, true));
+    } catch { return json({ error: "studio_job_conflict" }, 409); }
+  }
+
+  if (action === "admin_record_print") {
+    const jobId = typeof body.jobId === "string" ? body.jobId : "";
+    const job = isValidJobId(jobId) ? await getAdminJob(adminClient, jobId) : null;
+    if (!job || !job.input?.customerSavedVersion) return json({ error: "studio_job_not_found" }, 404);
+    const printing = printState(job.input);
+    if (printing.approvedVersion !== job.input.customerSavedVersion || printing.status !== "ready" || printing.completed >= printing.quantity) {
+      return json({ error: "studio_print_not_approved" }, 409);
+    }
+    const completed = printing.completed + 1;
+    const nextPrinting: PrintState = { ...printing, completed, status: completed >= printing.quantity ? "printed" : "ready" };
+    try {
+      const updated = await writeAdminJob(adminClient, job.id, { input: { ...job.input, printing: nextPrinting } }, job.updated_at);
+      return json(await jobSnapshot(adminClient, url, updated, true));
+    } catch { return json({ error: "studio_job_conflict" }, 409); }
+  }
+
+  if (action === "admin_catalog_upload") {
+    if (!form) return json({ error: "invalid_studio_input" }, 400);
+    const title = readActionText(form, "title", 120) || "";
+    const category = readActionText(form, "category", 80) || "";
+    const file = form.get("image");
+    if (!title || !category || !(file instanceof File) || file.size <= 0 || file.size > 100_000 || file.type !== "image/webp") {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (detectImageMime(bytes) !== "image/webp") return json({ error: "invalid_studio_input" }, 400);
+    const item: CatalogEntry = { id: crypto.randomUUID(), title, category, path: "catalog/" + crypto.randomUUID() + ".webp", createdAt: new Date().toISOString() };
+    try {
+      const entries = await readCatalogIndex(adminClient);
+      const { error } = await adminClient.storage.from(BUCKET).upload(item.path, bytes, { contentType: "image/webp", upsert: false });
+      if (error) throw error;
+      try { await writeCatalogIndex(adminClient, [...entries, item]); } catch (error) {
+        await adminClient.storage.from(BUCKET).remove([item.path]);
+        throw error;
+      }
+      return json({ items: await catalogWithSignedUrls(adminClient, url, [...entries, item]) });
+    } catch { return json({ error: "studio_catalog_save_failed" }, 500); }
+  }
+
+  if (action === "admin_catalog_delete") {
+    const id = typeof body.id === "string" ? body.id : "";
+    if (!id) return json({ error: "invalid_studio_input" }, 400);
+    try {
+      const entries = await readCatalogIndex(adminClient);
+      const removed = entries.find((item) => item.id === id);
+      if (!removed) return json({ error: "studio_catalog_item_not_found" }, 404);
+      const next = entries.filter((item) => item.id !== id);
+      await writeCatalogIndex(adminClient, next);
+      await adminClient.storage.from(BUCKET).remove([removed.path]);
+      return json({ items: await catalogWithSignedUrls(adminClient, url, next) });
+    } catch { return json({ error: "studio_catalog_save_failed" }, 500); }
+  }
+
+  return json({ error: "invalid_studio_input" }, 400);
+}
+
 async function handleRequest(request: Request): Promise<Response> {
   if (request.headers.get("origin") !== PUBLIC_APP_ORIGIN) {
     return json({ error: "studio_origin_not_allowed" }, 403);
   }
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-
-  const authorization = await authorize(request);
-  if (authorization instanceof Response) return authorization;
-  const { sessionId, adminClient, url } = authorization;
 
   const contentType = request.headers.get("content-type") || "";
   let action: string | null = null;
@@ -1225,6 +1658,22 @@ async function handleRequest(request: Request): Promise<Response> {
     }
   } catch {
     return json({ error: "invalid_studio_input" }, 400);
+  }
+
+  if (!action) return json({ error: "invalid_studio_input" }, 400);
+  if (action.startsWith("admin_")) return await handleAdminAction(request, action, body, form);
+
+  const authorization = await authorize(request);
+  if (authorization instanceof Response) return authorization;
+  const { sessionId, adminClient, url } = authorization;
+
+  if (action === "catalog_list") {
+    try {
+      const items = await catalogWithSignedUrls(adminClient, url, await readCatalogIndex(adminClient));
+      return json({ items });
+    } catch {
+      return json({ error: "studio_catalog_lookup_failed" }, 500);
+    }
   }
 
   if (action === "latest") {
@@ -1266,6 +1715,30 @@ async function handleRequest(request: Request): Promise<Response> {
     const job = await getJob(adminClient, body.jobId, sessionId);
     if (!job) return json({ error: "studio_job_not_found" }, 404);
     return json(await jobSnapshot(adminClient, url, job, true));
+  }
+
+  if (action === "save_design") {
+    if (!isValidJobId(body.jobId)) return json({ error: "studio_job_not_found" }, 404);
+    const version = Number(body.version);
+    if (!Number.isInteger(version) || version < 1) return json({ error: "invalid_studio_input" }, 400);
+    const job = await getJob(adminClient, body.jobId, sessionId);
+    if (!job) return json({ error: "studio_job_not_found" }, 404);
+    const hasArt = Array.isArray(job.art_versions) && job.art_versions.some((item) => item.version === version);
+    const hasPairMockup = Array.isArray(job.mockups) && job.mockups.some((item) => item.version === version && item.side === "pair");
+    if (!hasArt || !hasPairMockup || !job.input?.customerContact || job.status !== "needs_review" || job.processing) {
+      return json({ error: "studio_job_conflict" }, 409);
+    }
+    try {
+      const updated = await writeJob(adminClient, job.id, sessionId, {
+        input: {
+          ...job.input,
+          customerSavedVersion: version,
+          customerSavedAt: new Date().toISOString(),
+          orderStatus: job.input.customerSavedVersion ? job.input.orderStatus || "new" : "new",
+        },
+      }, job.updated_at);
+      return json(await jobSnapshot(adminClient, url, updated, true));
+    } catch { return json({ error: "studio_job_conflict" }, 409); }
   }
 
   if (action === "start") {
@@ -1480,6 +1953,7 @@ async function handleRequest(request: Request): Promise<Response> {
     if (!hasVersion(job)) return json({ error: "studio_art_version_not_found" }, 409);
     if (alreadyQueued(job)) return json(await jobSnapshot(adminClient, url, job), 202);
     if (job.status !== "needs_review") return json({ error: "studio_job_conflict" }, 409);
+    const customerId = await registerPublicCustomer(adminClient, customerName, customerEmail, customerWhatsapp);
     // A request already finishing the old terminal-state poll can briefly mark
     // this completed job as processing. Let it settle before rejecting mockups.
     for (let attempt = 0; job.processing && attempt < 6; attempt++) {
@@ -1557,7 +2031,7 @@ async function handleRequest(request: Request): Promise<Response> {
           updated = await writeJob(adminClient, job.id, sessionId, {
             input: {
               ...currentJob.input,
-              customerContact: { name: customerName, email: customerEmail, whatsapp: customerWhatsapp },
+              customerContact: { name: customerName, email: customerEmail, whatsapp: customerWhatsapp, customerId },
               mockupTargetVersion: version,
               mockupReferencePaths: { version, leftPath, rightPath },
             },

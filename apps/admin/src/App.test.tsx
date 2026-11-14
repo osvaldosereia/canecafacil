@@ -18,13 +18,14 @@ describe('App', () => {
     expect(html).not.toContain('Painel operacional do atendimento');
   });
 
-  it('abre o Caneca 360 sem login no GitHub Pages', () => {
+  it('abre o site público de criação no GitHub Pages', () => {
     vi.stubEnv('VITE_STUDIO_ONLY', 'true');
     try {
       const client = {} as SupabaseClient;
       const html = renderToStaticMarkup(<App client={client} />);
 
-      expect(html).toContain('Caneca 360');
+      expect(html).toContain('SUA IDEIA, SUA CANECA');
+      expect(html).toContain('Gerar 3 opções de arte');
       expect(html).not.toContain('Entrar no Caneca Fácil');
       expect(html).not.toContain('type="password"');
     } finally {
@@ -32,7 +33,7 @@ describe('App', () => {
     }
   });
 
-  it('mostra a biblioteca de comandos rápidos dentro do fluxo de criação sem login', () => {
+  it('mantém a biblioteca de comandos rápidos no estúdio interno', () => {
     const client = {} as SupabaseClient;
     const html = renderToStaticMarkup(<StudioPage client={client} />);
 

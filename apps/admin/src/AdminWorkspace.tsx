@@ -9,6 +9,7 @@ import {
 import { loadProjectList } from './lib/admin-data';
 import { createSupabaseAdminStore } from './lib/supabase-admin-data';
 import { ProjectsPage } from './pages/ProjectsPage';
+import { StorefrontAdminPage } from './pages/StorefrontAdminPage';
 import {
   loadProjectDetail,
   loadTemplateSettings,
@@ -16,8 +17,9 @@ import {
 } from './services/projects';
 import { createSupabaseProjectDataPort } from './services/supabase-projects';
 import type { ProjectListItem } from './components/ProjectList';
+import './AdminWorkspace.css';
 
-export type AdminSection = 'projects' | 'template' | 'studio';
+export type AdminSection = 'storefront' | 'projects' | 'template' | 'studio';
 
 export interface AdminWorkspaceViewProps {
   activeSection: AdminSection;
@@ -28,6 +30,7 @@ export interface AdminWorkspaceViewProps {
   loading: boolean;
   error: string | null;
   templateMessage: string | null;
+  storefrontContent?: ReactNode;
   studioContent?: ReactNode;
   onNavigate(section: AdminSection): void;
   onSelectProject(projectId: string): void;
@@ -44,6 +47,7 @@ export function AdminWorkspaceView({
   loading,
   error,
   templateMessage,
+  storefrontContent,
   studioContent,
   onNavigate,
   onSelectProject,
@@ -58,6 +62,13 @@ export function AdminWorkspaceView({
           <span> Admin</span>
         </div>
         <nav aria-label="Navegação do Admin">
+          <button
+            type="button"
+            aria-current={activeSection === 'storefront' ? 'page' : undefined}
+            onClick={() => onNavigate('storefront')}
+          >
+            Pedidos e clientes
+          </button>
           <button
             type="button"
             aria-current={activeSection === 'projects' ? 'page' : undefined}
@@ -88,7 +99,9 @@ export function AdminWorkspaceView({
       {error ? <p className="admin-alert" role="alert">{error}</p> : null}
       {loading ? <p className="admin-loading" aria-live="polite">Carregando…</p> : null}
 
-      {activeSection === 'projects' ? (
+      {activeSection === 'storefront' ? (
+        <main className="admin-page admin-page--storefront">{storefrontContent}</main>
+      ) : activeSection === 'projects' ? (
         <div className="workspace-grid">
           <ProjectsPage
             projects={projects}
@@ -131,7 +144,7 @@ export interface AdminWorkspaceProps {
 }
 
 export function AdminWorkspace({ client }: AdminWorkspaceProps) {
-  const [activeSection, setActiveSection] = useState<AdminSection>('projects');
+  const [activeSection, setActiveSection] = useState<AdminSection>('storefront');
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [projectDetail, setProjectDetail] = useState<ProjectDetailData | null>(null);
@@ -144,6 +157,10 @@ export function AdminWorkspace({ client }: AdminWorkspaceProps) {
   const projectPort = useMemo(() => createSupabaseProjectDataPort(client), [client]);
 
   useEffect(() => {
+    if (activeSection !== 'projects') {
+      setLoading(false);
+      return;
+    }
     let active = true;
     setLoading(true);
     setError(null);
@@ -164,7 +181,7 @@ export function AdminWorkspace({ client }: AdminWorkspaceProps) {
     return () => {
       active = false;
     };
-  }, [listStore]);
+  }, [activeSection, listStore]);
 
   async function handleSelectProject(projectId: string) {
     setSelectedProjectId(projectId);
@@ -234,6 +251,7 @@ export function AdminWorkspace({ client }: AdminWorkspaceProps) {
       loading={loading}
       error={error}
       templateMessage={templateMessage}
+      storefrontContent={<StorefrontAdminPage client={client} />}
       studioContent={<StudioPage client={client} />}
       onNavigate={handleNavigate}
       onSelectProject={handleSelectProject}

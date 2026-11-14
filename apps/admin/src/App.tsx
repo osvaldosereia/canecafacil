@@ -1,13 +1,37 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { useEffect, useState } from 'react';
 import { AdminWorkspace } from './AdminWorkspace';
 import { AuthGate } from './auth/AuthGate';
-import { StudioPage } from './pages/StudioPage';
+import { PublicCreatePage } from './pages/PublicCreatePage';
 
 export interface AppProps {
   client?: SupabaseClient;
 }
 
 export function App({ client }: AppProps) {
+  const isPagesBuild = import.meta.env.VITE_STUDIO_ONLY === 'true';
+  const [adminMode, setAdminMode] = useState(() =>
+    typeof window !== 'undefined' && window.location.hash === '#admin',
+  );
+
+  useEffect(() => {
+    function syncRoute() {
+      setAdminMode(window.location.hash === '#admin');
+    }
+    window.addEventListener('hashchange', syncRoute);
+    return () => window.removeEventListener('hashchange', syncRoute);
+  }, []);
+
+  if (isPagesBuild && !adminMode) {
+    if (client) return <PublicCreatePage client={client} />;
+    return (
+      <main className="setup-shell">
+        <h1>CanecaFácil</h1>
+        <p>O ateliê está sendo preparado. Tente novamente em alguns minutos.</p>
+      </main>
+    );
+  }
+
   if (!client) {
     return (
       <main className="setup-shell">
@@ -16,10 +40,6 @@ export function App({ client }: AppProps) {
         <p>Configure a conexão pública do Supabase para acessar o Admin.</p>
       </main>
     );
-  }
-
-  if (import.meta.env.VITE_STUDIO_ONLY === 'true') {
-    return <StudioPage client={client} />;
   }
 
   return (
