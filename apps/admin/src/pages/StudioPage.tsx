@@ -110,6 +110,8 @@ const apiErrors: Record<string, string> = {
   studio_print_not_approved: 'Aprove uma versão antes de imprimir.',
   studio_print_quantity_complete: 'A quantidade aprovada já foi impressa. Use “Reimprimir” e informe o motivo.',
   studio_job_conflict: 'O projeto mudou em outra ação. Atualize a tela e tente novamente.',
+  studio_mockup_job_busy: 'A arte ainda está sendo atualizada. Aguarde alguns segundos e tente gerar as prévias novamente.',
+  studio_asset_upload_failed: 'Não foi possível preparar os arquivos das prévias. Tente novamente.',
   studio_job_start_failed: 'Não foi possível iniciar a criação.',
   studio_job_lookup_failed: 'Não foi possível carregar o projeto.',
   studio_job_step_failed: 'Uma etapa da criação falhou. Confira o status e tente novamente.',
@@ -209,6 +211,7 @@ export function StudioPage({ client }: StudioPageProps) {
   const printImageRef = useRef<HTMLImageElement>(null);
   const skipInitialAutoOpenRef = useRef(false);
   const restoreRequestRef = useRef(0);
+  const mockupRequestRef = useRef(false);
 
   async function restoreConfigurationFromArt(sourceJob: Job, version: ArtVersion) {
     const requestId = ++restoreRequestRef.current;
@@ -531,7 +534,8 @@ export function StudioPage({ client }: StudioPageProps) {
   }
 
   async function generateMockups() {
-    if (!job || !chosenArt || selectedVersion === null) return;
+    if (!job || !chosenArt || selectedVersion === null || job.status !== 'needs_review' || mockupRequestRef.current) return;
+    mockupRequestRef.current = true;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -546,12 +550,27 @@ export function StudioPage({ client }: StudioPageProps) {
       form.set('version', String(selectedVersion));
       form.set('leftReference', leftReference);
       form.set('rightReference', rightReference);
-      const updated = await callStudio(client, form) as Job;
+      let updated: Job;
+      try {
+        updated = await callStudio(client, form) as Job;
+      } catch (cause) {
+        if (!(cause instanceof Error) || cause.message !== 'studio_job_conflict') throw cause;
+        const latest = await callStudio(client, { action: 'load', jobId: job.projectId }) as Job;
+        acceptJob(latest);
+        if (latest.status === 'mockup_left_pending' || latest.status === 'mockup_right_pending') {
+          setNotice('As prévias desta versão já estão em processamento.');
+          return;
+        }
+        if (latest.status !== 'needs_review' || latest.processing ||
+          !latest.artVersions.some((version) => version.version === selectedVersion)) throw cause;
+        updated = await callStudio(client, form) as Job;
+      }
       acceptJob(updated);
       setNotice('Pré-vias iniciadas: alça à esquerda com a metade esquerda da arte; alça à direita com a metade direita.');
     } catch (cause) {
       setError(errorMessage(cause, 'Não foi possível gerar as prévias.'));
     } finally {
+      mockupRequestRef.current = false;
       setBusy(false);
     }
   }
@@ -1029,7 +1048,7 @@ export function StudioPage({ client }: StudioPageProps) {
 
                   <section className="studio-action-card studio-optional-card">
                     <div className="studio-section-heading"><div><h3>Ver a arte na caneca</h3><p>O mockup da esquerda usa a metade esquerda; o da direita usa a metade direita.</p></div></div>
-                    <button className="studio-quiet-button" type="button" disabled={busy}
+                    <button className="studio-quiet-button" type="button" disabled={busy || job.status !== 'needs_review'}
                       onClick={() => void generateMockups()}>Gerar mockups com as duas alças</button>
                     {selectedMockups.length ? <div className="studio-mockups">
                       {selectedMockups.map((asset) => <figure key={`${asset.version}-${asset.side}`}>

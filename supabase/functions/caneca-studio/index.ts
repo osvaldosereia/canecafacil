@@ -450,12 +450,16 @@ function makeArtPrompt(input: StudioInput): string {
     : generationSide === "right"
     ? "The requested new art belongs only on the RIGHT HALF (x=1200 to 2399). Keep the LEFT HALF (x=0 to 1199) completely plain white with no artwork, lettering, shadows, or decoration."
     : "Create one continuous, balanced wrap design across both halves; the left half is x=0 to 1199 and the right half is x=1200 to 2399.";
+  const edgeInstruction = generationSide === "both"
+    ? "For a full wrap, keep the design continuous through the center split and finish the two outer edges deliberately: carry the matching background all the way to x=0 and x=2399, and let decorative forms end with a natural taper or a soft blend into that same background. No cut-off subjects, letters, leaves, abrupt color breaks, straight vertical borders, or rectangular frame edges."
+    : "For this single-side design, make the selected 1200 x 960 half look complete on its own. Carry its matching background cleanly to both vertical boundaries of that half and taper decorative forms naturally before those boundaries. Do not cut off subjects, letters, leaves, or other important elements. Keep the opposite half exactly as instructed, plain white.";
   const lines = [
     "Create only the flat 2D artwork for printing as a wrap on a ceramic mug. Never draw a mug, product mockup, hands, table, or room.",
     "Final landscape canvas: " + ART_SIZE + " pixels; physical target approximately 24 x 9.5 cm.",
     "The center split is exactly x=1200 px: left-side artwork is the first half of the file; right-side artwork is the second half. Do not mirror or swap the halves.",
     "Keep important text and artwork comfortably inside the top and bottom print-safe area. Preserve the full canvas and do not stretch, crop, or compress the design.",
     sideInstruction,
+    edgeInstruction,
     "Do not invent lettering, names, dates, or random text. Include only exact wording supplied below.",
     "Art description: " + description,
   ];
@@ -487,7 +491,8 @@ function makeMockupPrompt(side: Side): string {
     : "Show one white ceramic mug with its handle clearly pointing to the RIGHT side of the image. Print only the supplied RIGHT-HALF artwork on the visible mug surface.";
   return [
     "Create a clean commercial product photograph of exactly one white ceramic mug using the supplied side-only artwork as its printed design.",
-    "The supplied image is an exact crop of the corresponding side of the print file. Preserve its colors, text, symbols, and composition; do not redesign, mirror, flip, rotate, swap, or invent any part of it.",
+    "Treat the supplied image as the complete print region for this side, not as a rectangular sticker. Preserve its central composition, colors, exact text, symbols, orientation, and proportions; do not mirror, flip, rotate, swap, or redesign them.",
+    "At both vertical ends, continue the matching background cleanly to the edge and finish any decorative shapes with a natural taper or soft blend into that same background. Do not show a hard crop, a straight vertical border, an abrupt background change, or a cut-off subject or letter. Do not add a blank white strip unless white is already the artwork's background.",
     sideDescription,
     "Use soft natural studio lighting, a simple warm neutral background, and a realistic ceramic finish.",
     "Do not add extra logos, text, props that cover the mug, or additional mugs.",
@@ -872,6 +877,7 @@ async function advanceJob(
     .eq("guest_session_id", sessionId)
     .is("created_by", null)
     .or("processing.eq.false,processing_started_at.lt." + staleBefore)
+    .not("status", "in", "(\"needs_review\",\"failed\")")
     .select("*")
     .maybeSingle();
 
@@ -1364,6 +1370,29 @@ async function handleRequest(request: Request): Promise<Response> {
     if (!isValidJobId(jobId) || !Number.isInteger(version) || version < 1) {
       return json({ error: "invalid_studio_input" }, 400);
     }
+    let job = await getJob(adminClient, jobId, sessionId);
+    if (!job) return json({ error: "studio_job_not_found" }, 404);
+    const hasVersion = (candidate: JobRow) => Array.isArray(candidate.art_versions) &&
+      candidate.art_versions.some((item) => item.version === version);
+    const alreadyQueued = (candidate: JobRow) =>
+      ["mockup_left_pending", "mockup_right_pending"].includes(candidate.status) &&
+      candidate.input?.mockupTargetVersion === version &&
+      candidate.input?.mockupReferencePaths?.version === version;
+    if (!hasVersion(job)) return json({ error: "studio_job_conflict" }, 409);
+    if (alreadyQueued(job)) return json(await jobSnapshot(adminClient, url, job), 202);
+    if (job.status !== "needs_review") return json({ error: "studio_job_conflict" }, 409);
+    // A request already finishing the old terminal-state poll can briefly mark
+    // this completed job as processing. Let it settle before rejecting mockups.
+    for (let attempt = 0; job.processing && attempt < 6; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const current = await getJob(adminClient, jobId, sessionId);
+      if (!current) return json({ error: "studio_job_not_found" }, 404);
+      job = current;
+      if (alreadyQueued(job)) return json(await jobSnapshot(adminClient, url, job), 202);
+      if (job.status !== "needs_review") return json({ error: "studio_job_conflict" }, 409);
+    }
+    if (job.processing) return json({ error: "studio_mockup_job_busy" }, 409);
+
     let leftReference: ReferenceImage;
     let rightReference: ReferenceImage;
     try {
@@ -1372,11 +1401,6 @@ async function handleRequest(request: Request): Promise<Response> {
     } catch {
       return json({ error: "invalid_studio_input" }, 400);
     }
-    const job = await getJob(adminClient, jobId, sessionId);
-    if (!job) return json({ error: "studio_job_not_found" }, 404);
-    const versions = Array.isArray(job.art_versions) ? job.art_versions : [];
-    if (!Number.isInteger(version) || !versions.some((item) => item.version === version) ||
-      job.status !== "needs_review" || job.processing) return json({ error: "studio_job_conflict" }, 409);
     const rateDecision = await checkPublicStartLimit(adminClient, request);
     if (rateDecision === "limited") return json({ error: "studio_rate_limited" }, 429);
     if (rateDecision === "unavailable") return json({ error: "studio_rate_limit_unavailable" }, 503);
@@ -1385,32 +1409,81 @@ async function handleRequest(request: Request): Promise<Response> {
     const leftPath = job.id + "/mockup-reference-v" + version + "-left-" + stamp + ".webp";
     const rightPath = job.id + "/mockup-reference-v" + version + "-right-" + stamp + ".webp";
     let leftUploaded = false;
-    let updated: JobRow;
     try {
       await uploadPrivate(adminClient, leftPath, leftReference.bytes, leftReference.mimeType);
       leftUploaded = true;
       await uploadPrivate(adminClient, rightPath, rightReference.bytes, rightReference.mimeType);
-      const removed = (Array.isArray(job.mockups) ? job.mockups : [])
-        .filter((asset) => asset.version === version).map((asset) => asset.path);
-      const previousReferences = job.input.mockupReferencePaths;
-      updated = await writeJob(adminClient, job.id, sessionId, {
-        input: {
-          ...job.input,
-          mockupTargetVersion: version,
-          mockupReferencePaths: { version, leftPath, rightPath },
-        },
-        mockups: (Array.isArray(job.mockups) ? job.mockups : []).filter((asset) => asset.version !== version),
-        status: "mockup_left_pending",
-        error_code: null,
-      }, job.updated_at);
-      if (removed.length) await adminClient.storage.from(BUCKET).remove(removed);
-      if (previousReferences) {
-        await adminClient.storage.from(BUCKET).remove([previousReferences.leftPath, previousReferences.rightPath]);
-      }
-    } catch {
+    } catch (error) {
       await adminClient.storage.from(BUCKET).remove(leftUploaded ? [leftPath, rightPath] : [leftPath]);
+      console.error("[caneca-studio] mockup reference upload failed", {
+        jobId,
+        reason: error instanceof Error ? error.message : "unknown",
+      });
+      return json({ error: "studio_asset_upload_failed" }, 503);
+    }
+
+    let currentJob = job;
+    let updated: JobRow | null = null;
+    let oldMockups: string[] = [];
+    let oldReferences: { leftPath: string; rightPath: string } | null = null;
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (alreadyQueued(currentJob)) {
+          await adminClient.storage.from(BUCKET).remove([leftPath, rightPath]);
+          return json(await jobSnapshot(adminClient, url, currentJob), 202);
+        }
+        if (currentJob.status !== "needs_review" || currentJob.processing || !hasVersion(currentJob)) {
+          throw new Error("studio_job_conflict");
+        }
+        const currentReferences = currentJob.input.mockupReferencePaths;
+        try {
+          updated = await writeJob(adminClient, job.id, sessionId, {
+            input: {
+              ...currentJob.input,
+              mockupTargetVersion: version,
+              mockupReferencePaths: { version, leftPath, rightPath },
+            },
+            mockups: (Array.isArray(currentJob.mockups) ? currentJob.mockups : [])
+              .filter((asset) => asset.version !== version),
+            status: "mockup_left_pending",
+            error_code: null,
+          }, currentJob.updated_at);
+          oldMockups = (Array.isArray(currentJob.mockups) ? currentJob.mockups : [])
+            .filter((asset) => asset.version === version).map((asset) => asset.path);
+          oldReferences = currentReferences
+            ? { leftPath: currentReferences.leftPath, rightPath: currentReferences.rightPath }
+            : null;
+          break;
+        } catch (error) {
+          if (attempt > 0) throw error;
+          const latest = await getJob(adminClient, jobId, sessionId);
+          if (!latest) throw new Error("studio_job_conflict");
+          if (alreadyQueued(latest)) {
+            await adminClient.storage.from(BUCKET).remove([leftPath, rightPath]);
+            return json(await jobSnapshot(adminClient, url, latest), 202);
+          }
+          if (latest.status !== "needs_review" || latest.processing || !hasVersion(latest)) {
+            throw new Error("studio_job_conflict");
+          }
+          currentJob = latest;
+        }
+      }
+    } catch (error) {
+      await adminClient.storage.from(BUCKET).remove([leftPath, rightPath]);
+      console.error("[caneca-studio] mockups could not be queued", {
+        jobId,
+        reason: error instanceof Error ? error.message : "unknown",
+      });
+      return json({ error: error instanceof Error && error.message === "studio_job_conflict"
+        ? "studio_job_conflict"
+        : "studio_job_lookup_failed" }, error instanceof Error && error.message === "studio_job_conflict" ? 409 : 500);
+    }
+    if (!updated) {
+      await adminClient.storage.from(BUCKET).remove([leftPath, rightPath]);
       return json({ error: "studio_job_conflict" }, 409);
     }
+    const removePaths = [...oldMockups, ...(oldReferences ? [oldReferences.leftPath, oldReferences.rightPath] : [])];
+    if (removePaths.length) await adminClient.storage.from(BUCKET).remove(removePaths);
     return json(await jobSnapshot(adminClient, url, updated), 202);
   }
 
