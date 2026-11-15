@@ -188,7 +188,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
   }
 
   useEffect(() => {
-    if (!drawerOpen) return;
+    if (!drawerOpen || job) return;
     const root = document.documentElement;
     const previousOverflowY = root.style.overflowY;
     root.style.overflowY = 'hidden';
@@ -200,7 +200,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
       root.style.overflowY = previousOverflowY;
       window.removeEventListener('keydown', closeOnEscape);
     };
-  }, [drawerOpen]);
+  }, [drawerOpen, job]);
 
   useEffect(() => {
     let active = true;
@@ -329,6 +329,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
       form.set('reference', reference);
       const created = await studio(client, form) as Creation;
       setJob(created);
+      setDrawerOpen(false);
       if (created.customerContact) setContact({ ...created.customerContact, whatsapp: created.customerContact.whatsapp || '' });
       setNotice('Criando sua arte horizontal. Esta tela atualiza sozinha.');
     } catch (reason) {
