@@ -8,6 +8,7 @@ import {
 } from './components/TemplateForm';
 import { loadProjectList } from './lib/admin-data';
 import { createSupabaseAdminStore } from './lib/supabase-admin-data';
+import { AdminUsersPage } from './pages/AdminUsersPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { StorefrontAdminPage } from './pages/StorefrontAdminPage';
 import {
@@ -19,7 +20,7 @@ import { createSupabaseProjectDataPort } from './services/supabase-projects';
 import type { ProjectListItem } from './components/ProjectList';
 import './AdminWorkspace.css';
 
-export type AdminSection = 'storefront' | 'projects' | 'template' | 'studio';
+export type AdminSection = 'storefront' | 'users' | 'projects' | 'template' | 'studio';
 
 export interface AdminWorkspaceViewProps {
   activeSection: AdminSection;
@@ -31,7 +32,9 @@ export interface AdminWorkspaceViewProps {
   error: string | null;
   templateMessage: string | null;
   storefrontContent?: ReactNode;
+  usersContent?: ReactNode;
   studioContent?: ReactNode;
+  adminAccessMode?: boolean;
   onNavigate(section: AdminSection): void;
   onSelectProject(projectId: string): void;
   onSaveTemplate(template: MugTemplateSettings): void | Promise<void>;
@@ -48,7 +51,9 @@ export function AdminWorkspaceView({
   error,
   templateMessage,
   storefrontContent,
+  usersContent,
   studioContent,
+  adminAccessMode = false,
   onNavigate,
   onSelectProject,
   onSaveTemplate,
@@ -71,27 +76,38 @@ export function AdminWorkspaceView({
           </button>
           <button
             type="button"
-            aria-current={activeSection === 'projects' ? 'page' : undefined}
-            onClick={() => onNavigate('projects')}
+            aria-current={activeSection === 'users' ? 'page' : undefined}
+            onClick={() => onNavigate('users')}
           >
-            Projetos
+            Usuários
           </button>
-          <button
-            type="button"
-            aria-current={activeSection === 'template' ? 'page' : undefined}
-            onClick={() => onNavigate('template')}
-          >
-            Gabarito
-          </button>
-          <button
-            type="button"
-            aria-current={activeSection === 'studio' ? 'page' : undefined}
-            onClick={() => onNavigate('studio')}
-          >
-            Estúdio
-          </button>
+          {!adminAccessMode ? (
+            <>
+              <button
+                type="button"
+                aria-current={activeSection === 'projects' ? 'page' : undefined}
+                onClick={() => onNavigate('projects')}
+              >
+                Projetos
+              </button>
+              <button
+                type="button"
+                aria-current={activeSection === 'template' ? 'page' : undefined}
+                onClick={() => onNavigate('template')}
+              >
+                Gabarito
+              </button>
+              <button
+                type="button"
+                aria-current={activeSection === 'studio' ? 'page' : undefined}
+                onClick={() => onNavigate('studio')}
+              >
+                Estúdio
+              </button>
+            </>
+          ) : null}
           <button type="button" onClick={() => void onSignOut()}>
-            Sair
+            {adminAccessMode ? 'Voltar ao site' : 'Sair'}
           </button>
         </nav>
       </header>
@@ -101,6 +117,8 @@ export function AdminWorkspaceView({
 
       {activeSection === 'storefront' ? (
         <main className="admin-page admin-page--storefront">{storefrontContent}</main>
+      ) : activeSection === 'users' ? (
+        <main className="admin-page admin-page--users">{usersContent}</main>
       ) : activeSection === 'projects' ? (
         <div className="workspace-grid">
           <ProjectsPage
@@ -141,9 +159,10 @@ export function AdminWorkspaceView({
 
 export interface AdminWorkspaceProps {
   client: SupabaseClient;
+  adminAccessToken?: string | null;
 }
 
-export function AdminWorkspace({ client }: AdminWorkspaceProps) {
+export function AdminWorkspace({ client, adminAccessToken = null }: AdminWorkspaceProps) {
   const [activeSection, setActiveSection] = useState<AdminSection>('storefront');
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -234,6 +253,10 @@ export function AdminWorkspace({ client }: AdminWorkspaceProps) {
   }
 
   async function handleSignOut() {
+    if (adminAccessToken) {
+      if (typeof window !== 'undefined') window.location.hash = '';
+      return;
+    }
     setError(null);
     const { error: signOutError } = await client.auth.signOut();
     if (signOutError) {
@@ -252,7 +275,9 @@ export function AdminWorkspace({ client }: AdminWorkspaceProps) {
       error={error}
       templateMessage={templateMessage}
       storefrontContent={<StorefrontAdminPage client={client} />}
+      usersContent={<AdminUsersPage client={client} />}
       studioContent={<StudioPage client={client} />}
+      adminAccessMode={Boolean(adminAccessToken)}
       onNavigate={handleNavigate}
       onSelectProject={handleSelectProject}
       onSaveTemplate={handleSaveTemplate}
