@@ -578,14 +578,15 @@ function makeArtPrompt(input: StudioInput): string {
     ? "The requested new art belongs only on the LEFT HALF (x=0 to 1199). Keep the RIGHT HALF (x=1200 to 2399) completely plain white with no artwork, lettering, shadows, or decoration."
     : generationSide === "right"
     ? "The requested new art belongs only on the RIGHT HALF (x=1200 to 2399). Keep the LEFT HALF (x=0 to 1199) completely plain white with no artwork, lettering, shadows, or decoration."
-    : "Create one continuous, balanced wrap design across both halves; the left half is x=0 to 1199 and the right half is x=1200 to 2399.";
+    : "Create one coordinated wrap design across both halves. Treat the left half (x=0 to 1199) and right half (x=1200 to 2399) as separate print panels, and center each side's composition within its own half.";
   const edgeInstruction = generationSide === "both"
-    ? "For a full wrap, keep the design continuous through the center split and finish the two outer edges deliberately: carry the matching background all the way to x=0 and x=2399, and let decorative forms end with a natural taper or a soft blend into that same background. No cut-off subjects, letters, leaves, abrupt color breaks, straight vertical borders, or rectangular frame edges."
+    ? "For a full wrap, finish the two outer edges deliberately: carry the matching background to x=0 and x=2399, and let decorative forms taper naturally or blend softly into that background. Keep each half's composition centered in its own panel. Avoid cut-off subjects, letters, leaves, abrupt color breaks, straight vertical borders, and rectangular frame edges."
     : "For this single-side design, make the selected 1200 x 960 half look complete on its own. Carry its matching background cleanly to both vertical boundaries of that half and taper decorative forms naturally before those boundaries. Do not cut off subjects, letters, leaves, or other important elements. Keep the opposite half exactly as instructed, plain white.";
   const lines = [
     "Create only the flat 2D artwork for printing as a wrap on a ceramic mug. Never draw a mug, product mockup, hands, table, or room.",
     "Final landscape canvas: " + ART_SIZE + " pixels; physical target approximately 24 x 9.5 cm.",
     "The center split is exactly x=1200 px: left-side artwork is the first half of the file; right-side artwork is the second half. Do not mirror or swap the halves.",
+    "For each side being newly created or revised, center its complete composition in its own 1200 x 960 px half. Target artwork occupying about 80% of that half's area, roughly a centered 1080 x 864 px box (90% of each dimension), leaving about 5% margin on all sides. Keep key subjects and lettering inside that area; do not cross x=1200 or touch the outer canvas edge. Preserve any opposite half exactly when instructed.",
     "Use a clean plain-white background. Keep the outer corners at both ends clear, preserve safe space around important content, and never let text or key motifs touch or cross a canvas edge.",
     "Keep important text and artwork comfortably inside the top and bottom print-safe area. Preserve the full canvas and do not stretch, crop, or compress the design.",
     sideInstruction,
@@ -599,7 +600,7 @@ function makeArtPrompt(input: StudioInput): string {
       "Do not reproduce or retain any signature, artist name, watermark, logo, brand, copyright notice, website name, URL, social handle, QR code, or other source attribution visible in the reference. Omit those marks completely from the new artwork. Do not edit or present the reference itself as the result.",
     );
     lines.push(
-      "This request returns three separate print-art options. Make each output a standalone complete design, never a three-panel sheet or collage. The three options must be visibly different in composition and supporting details while following the same brief.",
+      "This request returns exactly one standalone print-art file: one complete 2400 x 960 design, never a contact sheet, three-panel sheet, collage, or alternate-options layout.",
     );
   }
   if (!input.pendingEdit && generationSide === "both" && input.creationMode === "reference" && input.mandatoryText?.length) {
