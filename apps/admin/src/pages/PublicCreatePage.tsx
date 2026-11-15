@@ -17,13 +17,6 @@ type PublicRequest = {
   text?: string;
   kind?: 'name' | 'phrase';
   name?: string;
-  phrase?: string;
-  autoPhrase?: boolean;
-  generatedPhrase?: string;
-  generatedTheme?: string;
-  referenceId?: string;
-  referenceTitle?: string;
-  referenceCategory?: string;
 };
 type Creation = {
   projectId: string;
@@ -33,7 +26,6 @@ type Creation = {
   customerSavedVersion?: number | null;
   orderStatus?: string | null;
   publicRequest?: PublicRequest | null;
-  referenceUrl?: string | null;
   artVersions: ArtVersion[];
   mockups: Mockup[];
 };
@@ -397,7 +389,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
             <button className="public-link" type="button" onClick={newCreation} disabled={busy}>Nova criação</button>
           </div>
           {!ready(job) ? <div className="public-loading"><span className="public-spinner" />Gerando três ilustrações diferentes e três mockups quadrados…</div> : null}
-          {job.status === 'failed' ? <p className="public-message is-error">Não foi possível terminar as seis imagens. Você pode tentar novamente com a mesma foto.</p> : null}
+          {job.status === 'failed' ? <p className="public-message is-error">Uma etapa da geração falhou. Inicie uma nova criação para enviar a imagem novamente.</p> : null}
           {ready(job) && variants.length === 0 ? <p className="public-message is-error">A criação terminou sem imagens disponíveis. Tente gerar novamente.</p> : null}
 
           {variants.length ? <div className="public-options">
@@ -405,7 +397,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
               const mockup = job.mockups.find((asset) => asset.version === item.version && asset.side === 'pair');
               return <article className={'public-option' + (selectedVersion === item.version ? ' is-selected' : '')} key={item.version}>
                 <button className="public-option-select" type="button" onClick={() => setSelectedVersion(item.version)} aria-pressed={selectedVersion === item.version}>
-                  <span className="public-option-title"><strong>Opção {item.variantIndex || index + 1}</strong><small>{item.styleStrategy || ['Aquarela', 'Cartoon ilustrado', 'Lápis de cor'][index]}</small></span>
+                  <span className="public-option-title"><strong>Opção {item.variantIndex || index + 1}</strong><small>{item.styleStrategy || ['Aquarela delicada', 'Cartoon de traço limpo', 'Lápis de cor texturizado'][index]}</small></span>
                   <span className="public-variant-previews">
                     {item.url ? <img className="public-art-preview" src={item.url} alt={'Arte horizontal da opção ' + (item.variantIndex || index + 1)} />
                       : <span className="public-expired-art">Arte removida após 15 dias</span>}
@@ -445,7 +437,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
                 <input type="tel" autoComplete="tel" maxLength={24} value={contact.whatsapp} onChange={(event) => updateContact('whatsapp', event.target.value)} placeholder="(65) 99999-9999" />
               </label>
               <button className="public-primary" type="button" disabled={busy} onClick={() => void saveDesign()}>
-                {busy ? 'Registrando sua escolha…' : 'Selecionar esta arte para encomendar'}
+                {busy ? 'Registrando sua escolha…' : 'Quero encomendar esta opção'}
               </button>
             </section>
           ) : null}
