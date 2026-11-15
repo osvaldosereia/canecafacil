@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { readAdminAccessTokenFromLocation } from '../lib/admin-access';
 import './StorefrontAdminPage.css';
 
 type Contact = { name: string; email: string; whatsapp: string; customerId?: string | null };
@@ -35,11 +36,18 @@ const orderStatuses = [
 ] as const;
 
 async function invoke<T>(client: SupabaseClient, body: Record<string, unknown> | FormData): Promise<T> {
-  const { data: { session } } = await client.auth.getSession();
-  if (!session?.access_token) throw new Error('admin_auth_required');
+  const accessToken = readAdminAccessTokenFromLocation();
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers['x-caneca-admin-link'] = accessToken;
+  } else {
+    const { data: { session } } = await client.auth.getSession();
+    if (!session?.access_token) throw new Error('admin_auth_required');
+    headers.Authorization = 'Bearer ' + session.access_token;
+  }
   const { data, error } = await client.functions.invoke('caneca-studio', {
     body,
-    headers: { Authorization: 'Bearer ' + session.access_token },
+    headers,
   });
   if (error) {
     const context = (error as { context?: unknown }).context;
@@ -59,7 +67,8 @@ async function invoke<T>(client: SupabaseClient, body: Record<string, unknown> |
 
 function errorMessage(error: unknown): string {
   const code = error instanceof Error ? error.message : '';
-  if (code === 'admin_auth_required' || code === 'admin_access_required') return 'Entre novamente com uma conta administradora.';
+  if (code === 'admin_auth_required' || code === 'admin_access_required') return 'O link privado do Admin não foi aceito. Abra o link atualizado.';
+  if (code === 'admin_access_unavailable') return 'Não foi possível verificar o acesso ao painel. Tente novamente mais tarde.';
   if (code === 'studio_customer_update_failed') return 'Não foi possível atualizar o cadastro do cliente.';
   if (code === 'studio_catalog_save_failed') return 'Não foi possível salvar a imagem de referência.';
   return 'Não foi possível concluir esta ação. Atualize a página e tente novamente.';

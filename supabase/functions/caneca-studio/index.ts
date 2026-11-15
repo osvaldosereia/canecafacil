@@ -11,12 +11,13 @@ const SIGNED_URL_TTL = 900;
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 const PUBLIC_APP_ORIGIN = "https://osvaldosereia.github.io";
 const PUBLIC_START_LIMIT = 5;
+const ADMIN_LINK_TOKEN_SHA256 = "265da8886d362b4ad005f6111c99aaab0a25e3e0a1e1a0ff223a77469c70be54";
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type AdminClient = SupabaseClient<any, "public">;
 const corsHeaders = {
   ...supabaseCorsHeaders,
   "Access-Control-Allow-Origin": PUBLIC_APP_ORIGIN,
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-studio-session",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-studio-session, x-caneca-admin-link",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Vary": "Origin",
 };
@@ -1362,13 +1363,25 @@ async function catalogWithSignedUrls(
 }
 
 async function authorizeAdminRequest(request: Request, adminClient: AdminClient): Promise<Response | null> {
+  const adminLinkToken = request.headers.get("x-caneca-admin-link") || "";
+  if (/^[a-f0-9]{64}$/i.test(adminLinkToken)) {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(adminLinkToken));
+    const actualHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    let difference = actualHash.length ^ ADMIN_LINK_TOKEN_SHA256.length;
+    for (let index = 0; index < Math.min(actualHash.length, ADMIN_LINK_TOKEN_SHA256.length); index++) {
+      difference |= actualHash.charCodeAt(index) ^ ADMIN_LINK_TOKEN_SHA256.charCodeAt(index);
+    }
+    if (difference === 0) return null;
+  }
+
   const token = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
   if (!token) return json({ error: "admin_auth_required" }, 401);
   const { data, error } = await adminClient.auth.getUser(token);
   if (error || !data.user) return json({ error: "admin_auth_required" }, 401);
-  const membership = await adminClient.from("admin_membership_lookup")
+  const membership = await adminClient.from("admin_users")
     .select("user_id")
     .eq("user_id", data.user.id)
+    .eq("is_active", true)
     .maybeSingle();
   if (membership.error) return json({ error: "admin_access_unavailable" }, 503);
   if (!membership.data) return json({ error: "admin_access_required" }, 403);
@@ -1399,6 +1412,98 @@ async function handleAdminAction(
   const { adminClient, url } = clients;
   const denied = await authorizeAdminRequest(request, adminClient);
   if (denied) return denied;
+
+  if (action === "admin_users_list") {
+    const { data, error } = await adminClient.from("admin_users")
+      .select("user_id,role,is_active,display_name,email,created_at,last_login_at")
+      .order("created_at", { ascending: true });
+    if (error) return json({ error: "admin_user_lookup_failed" }, 500);
+    return json({ users: data || [] });
+  }
+
+  if (action === "admin_user_create") {
+    const displayName = typeof body.displayName === "string" ? body.displayName.trim() : "";
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    if (displayName.length < 2 || displayName.length > 120) return json({ error: "admin_user_name_invalid" }, 400);
+    if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: "admin_user_email_invalid" }, 400);
+    if (password.length < 10 || password.length > 128) return json({ error: "admin_user_password_invalid" }, 400);
+
+    const { data: created, error: createError } = await adminClient.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { display_name: displayName },
+    });
+    if (createError || !created.user) {
+      const duplicateEmail = createError?.code === "email_exists";
+      return json({ error: duplicateEmail ? "admin_user_email_exists" : "admin_user_create_failed" }, duplicateEmail ? 409 : 400);
+    }
+
+    const { error: membershipError } = await adminClient.from("admin_users").insert({
+      user_id: created.user.id,
+      role: "operator",
+      is_active: true,
+      display_name: displayName,
+      email,
+    });
+    if (membershipError) {
+      await adminClient.auth.admin.deleteUser(created.user.id);
+      return json({ error: "admin_user_create_failed" }, 500);
+    }
+    return json({ user: {
+      user_id: created.user.id,
+      role: "operator",
+      is_active: true,
+      display_name: displayName,
+      email,
+      created_at: new Date().toISOString(),
+      last_login_at: null,
+    } }, 201);
+  }
+
+  if (action === "admin_user_set_password") {
+    const userId = typeof body.userId === "string" ? body.userId : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!SESSION_ID_PATTERN.test(userId)) return json({ error: "admin_user_not_found" }, 404);
+    if (password.length < 10 || password.length > 128) return json({ error: "admin_user_password_invalid" }, 400);
+    const { data: user, error: lookupError } = await adminClient.from("admin_users")
+      .select("user_id")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (lookupError) return json({ error: "admin_user_lookup_failed" }, 500);
+    if (!user) return json({ error: "admin_user_not_found" }, 404);
+    const { error } = await adminClient.auth.admin.updateUserById(userId, { password });
+    if (error) return json({ error: "admin_user_password_update_failed" }, 500);
+    return json({ updated: true });
+  }
+
+  if (action === "admin_user_set_active") {
+    const userId = typeof body.userId === "string" ? body.userId : "";
+    const isActive = body.isActive;
+    if (!SESSION_ID_PATTERN.test(userId) || typeof isActive !== "boolean") {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    const { data: user, error: lookupError } = await adminClient.from("admin_users")
+      .select("user_id,role,is_active")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (lookupError) return json({ error: "admin_user_lookup_failed" }, 500);
+    if (!user) return json({ error: "admin_user_not_found" }, 404);
+    if (!isActive && user.role === "owner" && user.is_active) {
+      const { count, error } = await adminClient.from("admin_users")
+        .select("user_id", { count: "exact", head: true })
+        .eq("role", "owner")
+        .eq("is_active", true);
+      if (error) return json({ error: "admin_user_lookup_failed" }, 500);
+      if ((count || 0) <= 1) return json({ error: "admin_user_last_owner" }, 409);
+    }
+    const { error } = await adminClient.from("admin_users")
+      .update({ is_active: isActive, updated_at: new Date().toISOString() })
+      .eq("user_id", userId);
+    if (error) return json({ error: "admin_user_update_failed" }, 500);
+    return json({ updated: true, isActive });
+  }
 
   if (action === "admin_catalog_list") {
     try {

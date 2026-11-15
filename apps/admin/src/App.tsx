@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { useEffect, useState } from 'react';
 import { AdminWorkspace } from './AdminWorkspace';
 import { AuthGate } from './auth/AuthGate';
+import { readAdminAccessToken } from './lib/admin-access';
 import { PublicCreatePage } from './pages/PublicCreatePage';
 
 export interface AppProps {
@@ -10,19 +11,19 @@ export interface AppProps {
 
 export function App({ client }: AppProps) {
   const isPagesBuild = import.meta.env.VITE_STUDIO_ONLY === 'true';
-  const [adminMode, setAdminMode] = useState(() =>
-    typeof window !== 'undefined' && window.location.hash === '#admin',
+  const [adminAccessToken, setAdminAccessToken] = useState(() =>
+    readAdminAccessToken(typeof window === 'undefined' ? '' : window.location.hash),
   );
 
   useEffect(() => {
-    function syncRoute() {
-      setAdminMode(window.location.hash === '#admin');
+    function syncAccessLink() {
+      setAdminAccessToken(readAdminAccessToken(window.location.hash));
     }
-    window.addEventListener('hashchange', syncRoute);
-    return () => window.removeEventListener('hashchange', syncRoute);
+    window.addEventListener('hashchange', syncAccessLink);
+    return () => window.removeEventListener('hashchange', syncAccessLink);
   }, []);
 
-  if (isPagesBuild && !adminMode) {
+  if (isPagesBuild && !adminAccessToken) {
     if (client) return <PublicCreatePage client={client} />;
     return (
       <main className="setup-shell">
@@ -40,6 +41,10 @@ export function App({ client }: AppProps) {
         <p>Configure a conexão pública do Supabase para acessar o Admin.</p>
       </main>
     );
+  }
+
+  if (isPagesBuild) {
+    return <AdminWorkspace client={client} adminAccessToken={adminAccessToken} />;
   }
 
   return (
