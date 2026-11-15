@@ -1357,7 +1357,7 @@ async function advanceJob(
           mimeType: referenceMime,
         };
         const imagePrompt = makePublicArtPrompt(job.input, variantIndex);
-        const [generated] = await openAIImages(apiKey, imagePrompt, ART_SIZE, reference, 1);
+        const generated = await openAIImage(apiKey, imagePrompt, ART_SIZE, reference);
         const version = variantIndex;
         const path = job.id + "/art-v" + version + ".webp";
         await uploadPrivate(adminClient, path, generated, "image/webp");
