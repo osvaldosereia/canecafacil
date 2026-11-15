@@ -97,7 +97,7 @@ async function invoke<T>(client: SupabaseClient, body: Record<string, unknown> |
 
 function errorMessage(error: unknown): string {
   const code = error instanceof Error ? error.message : '';
-  if (code === 'admin_auth_required' || code === 'admin_access_required') return 'O link privado do Admin não foi aceito. Abra o link atualizado.';
+  if (code === 'admin_auth_required' || code === 'admin_access_required') return 'Não foi possível abrir o painel. Atualize a página e tente novamente.';
   if (code === 'admin_access_unavailable') return 'Não foi possível verificar o acesso ao painel. Tente novamente mais tarde.';
   if (code === 'studio_customer_update_failed') return 'Não foi possível atualizar o cadastro do cliente.';
   return 'Não foi possível concluir esta ação. Atualize a página e tente novamente.';
