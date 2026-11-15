@@ -16,7 +16,17 @@ type Order = {
   customerSavedAt: string | null;
   orderStatus: string | null;
   adminNotes: string | null;
-  publicRequest?: { text: string; kind: 'name' | 'phrase'; referenceTitle: string; referenceCategory: string } | null;
+  publicRequest?: {
+    text: string;
+    kind: 'name' | 'phrase';
+    name?: string;
+    phrase?: string;
+    autoPhrase?: boolean;
+    generatedPhrase?: string;
+    generatedTheme?: string;
+    referenceTitle: string;
+    referenceCategory: string;
+  } | null;
   artVersions: Asset[];
   mockups: Mockup[];
   printing: Printing;
@@ -418,6 +428,11 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
           const art = order.artVersions.find((item) => item.version === version);
           const mockup = order.mockups.find((item) => item.version === version && item.side === 'pair');
           const printing = order.printing || { approvedVersion: null, quantity: 1, completed: 0, status: 'not_queued' as const };
+          const request = order.publicRequest;
+          const requestName = request?.name ?? (request?.kind === 'name' ? request.text : '');
+          const requestPhrase = request?.autoPhrase
+            ? request.generatedPhrase || ''
+            : request?.phrase ?? (request?.kind === 'phrase' ? request.text : '');
           return <article className="storefront-order" key={order.projectId}>
             <div className="storefront-order-visual">
               {mockup ? <img src={mockup.url} alt="Mockup escolhido pelo cliente" /> : art ? <img src={art.url} alt="Arte escolhida pelo cliente" /> : <span>☕</span>}
@@ -433,9 +448,12 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
                 <strong>{order.customerContact.name}</strong><a href={'mailto:' + order.customerContact.email}>{order.customerContact.email}</a>
                 <a href={'https://wa.me/' + order.customerContact.whatsapp.replace(/\D/g, '')} target="_blank" rel="noreferrer">WhatsApp {order.customerContact.whatsapp}</a>
               </div> : null}
-              {order.publicRequest ? <div className="storefront-request-summary">
-                <span>{order.publicRequest.kind === 'name' ? 'Nome escolhido' : 'Frase escolhida'}</span><strong>“{order.publicRequest.text}”</strong>
-                <small>Inspiração: {order.publicRequest.referenceTitle} · {order.publicRequest.referenceCategory}</small>
+              {request ? <div className="storefront-request-summary">
+                <span>Personalização da arte</span>
+                {requestName ? <strong>Nome: “{requestName}”</strong> : null}
+                {requestPhrase ? <strong>{request.autoPhrase ? 'Frase criada pela IA' : 'Frase'}: “{requestPhrase}”</strong> : null}
+                {!requestName && !requestPhrase ? <strong>Sem nome ou frase personalizada</strong> : null}
+                <small>{request.generatedTheme ? 'Tema identificado: ' + request.generatedTheme + ' · ' : ''}Inspiração: {request.referenceTitle} · {request.referenceCategory}</small>
               </div> : null}
               {art ? <div className="storefront-order-actions">
                 <a className="storefront-admin-button is-secondary" href={art.url} download={'canecafacil-' + order.projectId + '-v' + version + '.webp'}>Baixar arte 2400 × 960</a>
