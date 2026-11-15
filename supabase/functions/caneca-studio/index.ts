@@ -6,6 +6,7 @@ const BUCKET = "caneca-studio-assets";
 const IMAGE_MODEL = "gpt-image-2.5-flare";
 const IMAGE_QUALITY = "medium";
 const REVIEW_MODEL = "gpt-6.1-terra";
+const PHRASE_MODEL = "gpt-6-luna";
 const ART_SIZE = "2400x960";
 const SIGNED_URL_TTL = 900;
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
@@ -68,6 +69,11 @@ type StudioInput = {
   publicRequest?: {
     text: string;
     kind: "name" | "phrase";
+    name?: string;
+    phrase?: string;
+    autoPhrase?: boolean;
+    generatedPhrase?: string;
+    generatedTheme?: string;
     referenceId: string;
     referenceTitle: string;
     referenceCategory: string;
@@ -391,14 +397,23 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
   if (publicRequestText) {
     try {
       const value = JSON.parse(publicRequestText) as Record<string, unknown>;
-      if (typeof value.text !== "string" || value.text.trim().length < 1 || value.text.length > 120 ||
+      const text = typeof value.text === "string" ? value.text.trim() : "";
+      const name = typeof value.name === "string" ? value.name.trim() : "";
+      const phrase = typeof value.phrase === "string" ? value.phrase.trim() : "";
+      if ((value.text !== undefined && typeof value.text !== "string") || text.length > 260 ||
+        (value.name !== undefined && typeof value.name !== "string") || name.length > 80 ||
+        (value.phrase !== undefined && typeof value.phrase !== "string") || phrase.length > 120 ||
+        (value.autoPhrase !== undefined && typeof value.autoPhrase !== "boolean") ||
         (value.kind !== "name" && value.kind !== "phrase") || typeof value.referenceId !== "string" ||
         typeof value.referenceTitle !== "string" || typeof value.referenceCategory !== "string") {
         throw new Error("invalid_studio_input");
       }
       publicRequest = {
-        text: value.text.trim(),
+        text,
         kind: value.kind,
+        name: typeof value.name === "string" ? name : undefined,
+        phrase: typeof value.phrase === "string" ? phrase : undefined,
+        autoPhrase: value.autoPhrase === true,
         referenceId: value.referenceId.slice(0, 80),
         referenceTitle: value.referenceTitle.trim().slice(0, 120),
         referenceCategory: value.referenceCategory.trim().slice(0, 80),
@@ -448,6 +463,72 @@ async function resolveOpenAiKey(adminClient: AdminClient): Promise<string> {
     return "";
   }
   return typeof data === "string" ? data.trim() : "";
+}
+
+async function generatePhraseFromReference(
+  apiKey: string,
+  reference: ReferenceImage,
+  referenceTitle: string,
+  referenceCategory: string,
+): Promise<{ theme: string; phrase: string }> {
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: PHRASE_MODEL,
+      reasoning: { effort: "low" },
+      store: false,
+      max_output_tokens: 180,
+      text: { format: { type: "json_object" } },
+      input: [
+        {
+          role: "developer",
+          content: [
+            "Analise a imagem antes de escrever: identifique somente o assunto, o tema e o clima emocional que estiverem claramente visíveis; não invente contexto e não copie textos da imagem.",
+            "Depois crie uma única frase original em português brasileiro, curta e marcante, com 3 a 9 palavras, adequada para uma caneca e coerente com o tema e o sentimento percebidos.",
+            "Evite clichês, descrições literais da imagem, nomes próprios, citações conhecidas, assinaturas, marcas, sites e qualquer texto que apareça na referência.",
+            "Retorne somente um objeto JSON com as propriedades theme (resumo do tema em até 6 palavras) e phrase (a frase criada, sem aspas).",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "A categoria e o nome cadastrados pela equipe são apenas pistas secundárias. Dê prioridade ao que realmente aparece na imagem.\nCategoria: " +
+                referenceCategory.slice(0, 80) + "\nReferência: " + referenceTitle.slice(0, 120),
+            },
+            {
+              type: "input_image",
+              image_url: "data:" + reference.mimeType + ";base64," + bytesToBase64(reference.bytes),
+              detail: "low",
+            },
+          ],
+        },
+      ],
+    }),
+  });
+  const payload = await response.json().catch(() => ({})) as {
+    output_text?: string;
+    output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+  };
+  if (!response.ok) throw new Error("studio_phrase_generation_failed");
+  const outputText = payload.output_text || (payload.output || [])
+    .flatMap((item) => item.content || [])
+    .filter((item) => item.type === "output_text" && typeof item.text === "string")
+    .map((item) => item.text)
+    .join("\n");
+  let value: Record<string, unknown>;
+  try { value = JSON.parse(outputText) as Record<string, unknown>; }
+  catch { throw new Error("studio_phrase_generation_failed"); }
+  const theme = typeof value.theme === "string" ? value.theme.trim().replace(/\s+/g, " ") : "";
+  const phrase = typeof value.phrase === "string"
+    ? value.phrase.trim().replace(/^[\"“”'‘’]+|[\"“”'‘’]+$/g, "").replace(/\s+/g, " ")
+    : "";
+  if (!theme || theme.length > 120 || phrase.length < 3 || phrase.length > 90 || phrase.split(/\s+/).length > 12) {
+    throw new Error("studio_phrase_generation_failed");
+  }
+  return { theme, phrase };
 }
 
 async function authorize(request: Request): Promise<{
@@ -991,6 +1072,33 @@ async function startJob(
   form: FormData,
 ): Promise<Response> {
   const { input, reference } = await parseInput(form);
+  if (input.publicRequest?.autoPhrase) {
+    if (!reference) return json({ error: "invalid_studio_input" }, 400);
+    const apiKey = await resolveOpenAiKey(adminClient);
+    if (!apiKey) return json({ error: "openai_provider_secret_unavailable" }, 503);
+    try {
+      const generated = await generatePhraseFromReference(
+        apiKey,
+        reference,
+        input.publicRequest.referenceTitle,
+        input.publicRequest.referenceCategory,
+      );
+      const request = input.publicRequest;
+      const name = request.name?.trim() || "";
+      input.publicRequest = {
+        ...request,
+        kind: "phrase",
+        text: [name, generated.phrase].filter(Boolean).join(" · "),
+        generatedTheme: generated.theme,
+        generatedPhrase: generated.phrase,
+      };
+      input.mandatoryText = [...(input.mandatoryText || []), generated.phrase];
+      input.title = "Caneca · " + (name || generated.phrase).slice(0, 80);
+    } catch {
+      console.error("[caneca-studio] automatic phrase generation failed");
+      return json({ error: "studio_phrase_generation_failed" }, 502);
+    }
+  }
   const { data, error } = await adminClient.from(TABLE).insert({
     created_by: null,
     guest_session_id: sessionId,
@@ -1859,7 +1967,7 @@ async function handleRequestContent(request: Request): Promise<Response> {
     try {
       const catalog = await readCatalogIndex(adminClient);
       const items = await catalogWithSignedUrls(adminClient, url, catalog.items);
-      return json({ items });
+      return json({ items, categories: catalog.categories });
     } catch {
       return json({ error: "studio_catalog_lookup_failed" }, 500);
     }
