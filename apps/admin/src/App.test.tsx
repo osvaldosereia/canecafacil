@@ -25,7 +25,7 @@ describe('App', () => {
       const html = renderToStaticMarkup(<App client={client} />);
 
       expect(html).toContain('SUA IDEIA, SUA CANECA');
-      expect(html).toContain('Gerar 3 opções de arte');
+      expect(html).toContain('Selecione uma imagem de referência');
       expect(html).not.toContain('Entrar no Caneca Fácil');
       expect(html).not.toContain('type="password"');
     } finally {
