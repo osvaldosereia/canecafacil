@@ -4,14 +4,19 @@ import { corsHeaders as supabaseCorsHeaders } from "@supabase/supabase-js/cors";
 const TABLE = "caneca_studio_jobs";
 const BUCKET = "caneca-studio-assets";
 const IMAGE_MODEL = "gpt-image-2.5-flare";
-const IMAGE_QUALITY = "medium";
+const IMAGE_QUALITY = "low";
 const REVIEW_MODEL = "gpt-6.1-terra";
-const PHRASE_MODEL = "gpt-6-luna";
 const ART_SIZE = "2400x960";
 const ARTWORK_RETENTION_DAYS = 15;
 const ARTWORK_RETENTION_MS = ARTWORK_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const SIGNED_URL_TTL = 900;
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
+const PUBLIC_VARIANT_COUNT = 3;
+const PUBLIC_ART_STYLES = [
+  { label: "Aquarela delicada", direction: "A hand-painted watercolor storybook illustration, soft transparent washes, subtle paper texture, elegant organic contours and gentle luminous color." },
+  { label: "Cartoon de traço limpo", direction: "A polished original clean-line cartoon illustration, expressive confident outlines, simplified readable shapes, balanced cel shading and cheerful editorial character design." },
+  { label: "Lápis de cor texturizado", direction: "A refined colored-pencil illustration with visible layered pencil strokes, tactile paper grain, delicate crosshatching and warm hand-drawn texture." },
+] as const;
 const PUBLIC_APP_ORIGIN = "https://osvaldosereia.github.io";
 const PUBLIC_APP_ORIGINS = new Set([
   PUBLIC_APP_ORIGIN,
@@ -20,6 +25,7 @@ const PUBLIC_APP_ORIGINS = new Set([
 ]);
 const PUBLIC_START_LIMIT = 5;
 const ADMIN_LINK_TOKEN_SHA256 = "a6cca6fb0ba184203861554acea0ec1cc612508d554555d1ee33a599a388b2a2";
+const OPEN_ADMIN_LINK_TOKEN_SHA256 = "b6aab65096d0a49fcad30062b3fbd6cdb8ede24999b1a1874c04cae5fccf7627";
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type AdminClient = SupabaseClient<any, "public">;
 const corsHeaders = {
@@ -69,17 +75,20 @@ type StudioInput = {
   latestEditInstruction?: string | null;
   customerContact?: { name: string; email: string; whatsapp: string; customerId?: string | null } | null;
   publicRequest?: {
-    text: string;
-    kind: "name" | "phrase";
+    theme?: string;
+    mugName?: string;
+    text?: string;
+    kind?: "name" | "phrase";
     name?: string;
     phrase?: string;
     autoPhrase?: boolean;
     generatedPhrase?: string;
     generatedTheme?: string;
-    referenceId: string;
-    referenceTitle: string;
-    referenceCategory: string;
+    referenceId?: string;
+    referenceTitle?: string;
+    referenceCategory?: string;
   } | null;
+  publicGeneration?: { phase: "art" | "mockup"; variantIndex: number } | null;
   customerSavedVersion?: number | null;
   customerSavedAt?: string | null;
   orderStatus?: string | null;
@@ -109,6 +118,7 @@ type QualityReview = {
 type ArtVersion = {
   version: number;
   variantIndex?: number;
+  styleStrategy?: string;
   path: string;
   source?: "initial" | "operator_edit" | "quality_gate" | "operator_upload";
   parentVersion?: number | null;
@@ -403,27 +413,37 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
   if (publicRequestText) {
     try {
       const value = JSON.parse(publicRequestText) as Record<string, unknown>;
-      const text = typeof value.text === "string" ? value.text.trim() : "";
-      const name = typeof value.name === "string" ? value.name.trim() : "";
-      const phrase = typeof value.phrase === "string" ? value.phrase.trim() : "";
-      if ((value.text !== undefined && typeof value.text !== "string") || text.length > 260 ||
-        (value.name !== undefined && typeof value.name !== "string") || name.length > 80 ||
-        (value.phrase !== undefined && typeof value.phrase !== "string") || phrase.length > 120 ||
-        (value.autoPhrase !== undefined && typeof value.autoPhrase !== "boolean") ||
-        (value.kind !== "name" && value.kind !== "phrase") || typeof value.referenceId !== "string" ||
-        typeof value.referenceTitle !== "string" || typeof value.referenceCategory !== "string") {
-        throw new Error("invalid_studio_input");
+      const isNewFormat = value.theme !== undefined || value.mugName !== undefined;
+      if (isNewFormat) {
+        const theme = typeof value.theme === "string" ? value.theme.trim() : "";
+        const mugName = typeof value.mugName === "string" ? value.mugName.trim() : "";
+        if (!["Pet", "Família", "Amigo"].includes(theme) || !mugName || mugName.length > 80) {
+          throw new Error("invalid_studio_input");
+        }
+        publicRequest = { theme, mugName, name: mugName, text: mugName, kind: "name" };
+      } else {
+        const text = typeof value.text === "string" ? value.text.trim() : "";
+        const name = typeof value.name === "string" ? value.name.trim() : "";
+        const phrase = typeof value.phrase === "string" ? value.phrase.trim() : "";
+        if ((value.text !== undefined && typeof value.text !== "string") || text.length > 260 ||
+          (value.name !== undefined && typeof value.name !== "string") || name.length > 80 ||
+          (value.phrase !== undefined && typeof value.phrase !== "string") || phrase.length > 120 ||
+          (value.autoPhrase !== undefined && typeof value.autoPhrase !== "boolean") ||
+          (value.kind !== "name" && value.kind !== "phrase") || typeof value.referenceId !== "string" ||
+          typeof value.referenceTitle !== "string" || typeof value.referenceCategory !== "string") {
+          throw new Error("invalid_studio_input");
+        }
+        publicRequest = {
+          text,
+          kind: value.kind,
+          name: typeof value.name === "string" ? name : undefined,
+          phrase: typeof value.phrase === "string" ? phrase : undefined,
+          autoPhrase: value.autoPhrase === true,
+          referenceId: value.referenceId.slice(0, 80),
+          referenceTitle: value.referenceTitle.trim().slice(0, 120),
+          referenceCategory: value.referenceCategory.trim().slice(0, 80),
+        };
       }
-      publicRequest = {
-        text,
-        kind: value.kind,
-        name: typeof value.name === "string" ? name : undefined,
-        phrase: typeof value.phrase === "string" ? phrase : undefined,
-        autoPhrase: value.autoPhrase === true,
-        referenceId: value.referenceId.slice(0, 80),
-        referenceTitle: value.referenceTitle.trim().slice(0, 120),
-        referenceCategory: value.referenceCategory.trim().slice(0, 80),
-      };
     } catch {
       throw new Error("invalid_studio_input");
     }
@@ -469,72 +489,6 @@ async function resolveOpenAiKey(adminClient: AdminClient): Promise<string> {
     return "";
   }
   return typeof data === "string" ? data.trim() : "";
-}
-
-async function generatePhraseFromReference(
-  apiKey: string,
-  reference: ReferenceImage,
-  referenceTitle: string,
-  referenceCategory: string,
-): Promise<{ theme: string; phrase: string }> {
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: PHRASE_MODEL,
-      reasoning: { effort: "low" },
-      store: false,
-      max_output_tokens: 180,
-      text: { format: { type: "json_object" } },
-      input: [
-        {
-          role: "developer",
-          content: [
-            "Analise a imagem antes de escrever: identifique somente o assunto, o tema e o clima emocional que estiverem claramente visíveis; não invente contexto e não copie textos da imagem.",
-            "Depois crie uma única frase original em português brasileiro, curta e marcante, com 3 a 9 palavras, adequada para uma caneca e coerente com o tema e o sentimento percebidos.",
-            "Evite clichês, descrições literais da imagem, nomes próprios, citações conhecidas, assinaturas, marcas, sites e qualquer texto que apareça na referência.",
-            "Retorne somente um objeto JSON com as propriedades theme (resumo do tema em até 6 palavras) e phrase (a frase criada, sem aspas).",
-          ].join(" "),
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: "A categoria e o nome cadastrados pela equipe são apenas pistas secundárias. Dê prioridade ao que realmente aparece na imagem.\nCategoria: " +
-                referenceCategory.slice(0, 80) + "\nReferência: " + referenceTitle.slice(0, 120),
-            },
-            {
-              type: "input_image",
-              image_url: "data:" + reference.mimeType + ";base64," + bytesToBase64(reference.bytes),
-              detail: "low",
-            },
-          ],
-        },
-      ],
-    }),
-  });
-  const payload = await response.json().catch(() => ({})) as {
-    output_text?: string;
-    output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
-  };
-  if (!response.ok) throw new Error("studio_phrase_generation_failed");
-  const outputText = payload.output_text || (payload.output || [])
-    .flatMap((item) => item.content || [])
-    .filter((item) => item.type === "output_text" && typeof item.text === "string")
-    .map((item) => item.text)
-    .join("\n");
-  let value: Record<string, unknown>;
-  try { value = JSON.parse(outputText) as Record<string, unknown>; }
-  catch { throw new Error("studio_phrase_generation_failed"); }
-  const theme = typeof value.theme === "string" ? value.theme.trim().replace(/\s+/g, " ") : "";
-  const phrase = typeof value.phrase === "string"
-    ? value.phrase.trim().replace(/^[\"“”'‘’]+|[\"“”'‘’]+$/g, "").replace(/\s+/g, " ")
-    : "";
-  if (!theme || theme.length > 120 || phrase.length < 3 || phrase.length > 90 || phrase.split(/\s+/).length > 12) {
-    throw new Error("studio_phrase_generation_failed");
-  }
-  return { theme, phrase };
 }
 
 async function authorize(request: Request): Promise<{
@@ -630,6 +584,27 @@ function makeArtPrompt(input: StudioInput): string {
   return lines.join("\n");
 }
 
+function makePublicArtPrompt(input: StudioInput, variantIndex: number): string {
+  const request = input.publicRequest;
+  if (!request?.theme || !request.mugName) throw new Error("invalid_studio_input");
+  const style = PUBLIC_ART_STYLES[Math.max(0, Math.min(PUBLIC_VARIANT_COUNT - 1, variantIndex - 1))];
+  return [
+    "You are an expert professional illustrator who creates original, print-ready mug artwork.",
+    "Carefully analyze the uploaded photograph: identify its main subject, recognizable traits, pose, mood, and relevant context. Use that analysis as inspiration to draw a new illustration. Do not use the exact photo, paste it into the result, trace it, or recreate its pixels or exact composition.",
+    "Create a clearly illustrated, newly composed interpretation that still feels connected to the subject in the photo. This must look like a drawing, not a photograph.",
+    "Gift theme selected by the customer: " + request.theme + ". Let this theme guide the mood and small supporting details without adding unrelated subjects.",
+    "Distinct illustration strategy for this option: " + style.direction,
+    "Create only a flat horizontal 2D print design, exactly " + ART_SIZE + " pixels. Do not draw a mug, mockup, hands, table, room, or product scene.",
+    "The canvas is split exactly in the middle at x=1200. The LEFT half (x=0–1199) is reserved for the customer's name. The RIGHT half (x=1200–2399) contains the original illustration based on the photograph.",
+    "Write this exact name, preserving spelling and accents: " + JSON.stringify(request.mugName) + ". Place it centered in the LEFT half, with typography that suits the illustration style. Do not put this name on the right half. Add no other words, letters, dates, captions, or decorative lettering.",
+    "Center the name composition inside its own left 1200 x 960 panel. Center the full illustration inside its own right 1200 x 960 panel. Each composition should occupy about 80% of its panel area, remain separate, and never cross the center split.",
+    "Use a clean pure-white background. Keep about 5% clear margin around each panel, especially all four corners. No part of the name or important subject may be cropped by the canvas or end abruptly at either outer edge; let minor decorative strokes taper naturally into white.",
+    "The three options must use visibly different drawing techniques. Do not make a contact sheet or combine multiple styles in one output.",
+    "Do not reproduce any signature, artist name, watermark, logo, brand, copyright notice, website name, URL, social handle, QR code, or source attribution visible in the photograph. Omit those marks completely.",
+    "Keep the artwork clean, balanced, legible, original, and suitable for high-resolution sublimation printing on a white ceramic mug.",
+  ].join("\n");
+}
+
 function makeMockupPrompt(side: Side): string {
   const sideDescription = side === "left"
     ? "Show one white ceramic mug with its handle clearly pointing to the LEFT side of the image. Print only the supplied LEFT-HALF artwork on the visible mug surface."
@@ -651,6 +626,18 @@ function makePairMockupPrompt(): string {
     "The second supplied print image is the RIGHT HALF of the wrap. In the BOTTOM view, show one mug with its handle clearly pointing RIGHT and print only that second image on the visible side, in its original right-side position and orientation.",
     "Keep both printed designs faithful to their supplied artwork: do not mirror, flip, rotate, swap, rewrite text, replace symbols, or move the design to the wrong side. Show the full mug clearly in each half, with a small clean separation between the two views and no overlap.",
     "Use a simple light neutral studio background and soft natural lighting. Add no labels, captions, logos, watermarks, extra mugs, hands, props, or decorative borders.",
+  ].join(" ");
+}
+
+function makePublicPairMockupPrompt(): string {
+  return [
+    "Create exactly one square 1024 x 1024 commercial product image with two separate views of the same white ceramic mug, arranged vertically: one view in the TOP half and one in the BOTTOM half.",
+    "The supplied image is a horizontal print file split at its exact center. It contains the mug name on its LEFT half and an original illustration on its RIGHT half. Use the artwork itself as the print source; do not add, rewrite, mirror, redraw, or invent text or symbols.",
+    "TOP mug view: display the LEFT half of the print, the side with the exact name, and orient the mug handle clearly toward the LEFT. Place the design on the visible side of the mug in its correct left-side position.",
+    "BOTTOM mug view: display the RIGHT half of the print, the illustration side, and orient the mug handle clearly toward the RIGHT. Place the design on the visible side in its correct right-side position.",
+    "The top and bottom mugs represent the actual two sides of one printed mug. Keep the left-side name on top and the right-side illustration on bottom. Never swap or mirror them.",
+    "Show exactly two complete mugs, one in each half of the square. Use a clean light neutral studio background, soft natural lighting, and realistic white ceramic.",
+    "No extra text, labels, logos, watermarks, hands, props, borders, or additional mugs.",
   ].join(" ");
 }
 
@@ -922,6 +909,7 @@ async function jobSnapshot(
     return {
       version: version.version,
       variantIndex: version.variantIndex,
+      styleStrategy: version.styleStrategy || null,
       source: version.source || "initial",
       parentVersion: version.parentVersion ?? null,
       instruction: version.instruction ?? null,
@@ -1237,32 +1225,9 @@ async function startJob(
     }
     const customerId = await registerPublicCustomer(adminClient, customerName, customerEmail);
     input.customerContact = { name: customerName, email: customerEmail, whatsapp: "", customerId };
-  }
-  if (input.publicRequest?.autoPhrase) {
-    if (!reference) return json({ error: "invalid_studio_input" }, 400);
-    const apiKey = await resolveOpenAiKey(adminClient);
-    if (!apiKey) return json({ error: "openai_provider_secret_unavailable" }, 503);
-    try {
-      const generated = await generatePhraseFromReference(
-        apiKey,
-        reference,
-        input.publicRequest.referenceTitle,
-        input.publicRequest.referenceCategory,
-      );
-      const request = input.publicRequest;
-      const name = request.name?.trim() || "";
-      input.publicRequest = {
-        ...request,
-        kind: "phrase",
-        text: [name, generated.phrase].filter(Boolean).join(" · "),
-        generatedTheme: generated.theme,
-        generatedPhrase: generated.phrase,
-      };
-      input.mandatoryText = [...(input.mandatoryText || []), generated.phrase];
-      input.title = "Caneca · " + (name || generated.phrase).slice(0, 80);
-    } catch {
-      console.error("[caneca-studio] automatic phrase generation failed");
-      return json({ error: "studio_phrase_generation_failed" }, 502);
+    if (input.publicRequest.theme) {
+      input.publicGeneration = { phase: "art", variantIndex: 1 };
+      input.mandatoryText = [input.publicRequest.mugName || input.publicRequest.name || ""];
     }
   }
   const { data, error } = await adminClient.from(TABLE).insert({
@@ -1380,6 +1345,58 @@ async function advanceJob(
 
   try {
     if (job.status === "art_pending") {
+      if (job.input?.publicRequest?.theme && job.input.publicGeneration?.phase === "art") {
+        const variantIndex = Math.max(1, Math.min(PUBLIC_VARIANT_COUNT, job.input.publicGeneration.variantIndex || 1));
+        const style = PUBLIC_ART_STYLES[variantIndex - 1] || PUBLIC_ART_STYLES[0];
+        if (!job.reference_path) throw new Error("studio_reference_missing");
+        const referenceMime = job.reference_path.endsWith(".jpg") ? "image/jpeg"
+          : job.reference_path.endsWith(".webp") ? "image/webp" : "image/png";
+        const reference: ReferenceImage = {
+          bytes: await downloadPrivate(adminClient, job.reference_path),
+          fileName: "foto-enviada." + job.reference_path.split(".").pop(),
+          mimeType: referenceMime,
+        };
+        const imagePrompt = makePublicArtPrompt(job.input, variantIndex);
+        const generated = await openAIImage(apiKey, imagePrompt, ART_SIZE, reference);
+        const version = variantIndex;
+        const path = job.id + "/art-v" + version + ".webp";
+        await uploadPrivate(adminClient, path, generated, "image/webp");
+        const artVersions = [
+          ...(Array.isArray(job.art_versions) ? job.art_versions : []).filter((item) => item.version !== version),
+          {
+            version,
+            variantIndex,
+            styleStrategy: style.label,
+            path,
+            source: "initial" as const,
+            parentVersion: null,
+            createdAt: new Date().toISOString(),
+            generationSide: "both" as const,
+            configuration: creationConfiguration(
+              job.input,
+              imagePrompt,
+              true,
+              "both",
+              job.input.sizeBySide || { left: 100, right: 100 },
+            ),
+          },
+        ].sort((a, b) => a.version - b.version);
+        const allArtCreated = variantIndex >= PUBLIC_VARIANT_COUNT;
+        const input: StudioInput = {
+          ...job.input,
+          publicGeneration: allArtCreated
+            ? { phase: "mockup", variantIndex: 1 }
+            : { phase: "art", variantIndex: variantIndex + 1 },
+        };
+        const updated = await writeJob(adminClient, job.id, sessionId, {
+          input,
+          art_versions: artVersions,
+          status: allArtCreated ? "mockup_pair_pending" : "art_pending",
+          error_code: null,
+        });
+        return json(await jobSnapshot(adminClient, url, updated));
+      }
+
       const imagePrompt = makeArtPrompt(job.input);
       let reference: ReferenceImage | undefined;
       if (job.reference_path) {
@@ -1484,6 +1501,42 @@ async function advanceJob(
     }
 
     if (job.status === "mockup_pair_pending") {
+      if (job.input?.publicRequest?.theme && job.input.publicGeneration?.phase === "mockup") {
+        const variantIndex = Math.max(1, Math.min(PUBLIC_VARIANT_COUNT, job.input.publicGeneration.variantIndex || 1));
+        const art = (Array.isArray(job.art_versions) ? job.art_versions : [])
+          .find((item) => item.variantIndex === variantIndex);
+        if (!art) throw new Error("studio_art_missing");
+        const mimeType = art.path.endsWith(".jpg") ? "image/jpeg"
+          : art.path.endsWith(".png") ? "image/png" : "image/webp";
+        const artReference: ReferenceImage = {
+          bytes: await downloadPrivate(adminClient, art.path),
+          fileName: "arte-horizontal-v" + art.version + "." + safeExtension(mimeType),
+          mimeType,
+        };
+        const bytes = await openAIImage(apiKey, makePublicPairMockupPrompt(), "1024x1024", artReference);
+        const path = job.id + "/mockup-v" + art.version + "-pair-" + Date.now() + ".webp";
+        await uploadPrivate(adminClient, path, bytes, "image/webp");
+        const mockups = [
+          ...(Array.isArray(job.mockups) ? job.mockups : [])
+            .filter((asset) => asset.version !== art.version || asset.side !== "pair"),
+          { version: art.version, side: "pair" as const, path, createdAt: new Date().toISOString() },
+        ];
+        const allMockupsCreated = variantIndex >= PUBLIC_VARIANT_COUNT;
+        const input: StudioInput = {
+          ...job.input,
+          publicGeneration: allMockupsCreated
+            ? null
+            : { phase: "mockup", variantIndex: variantIndex + 1 },
+        };
+        const updated = await writeJob(adminClient, job.id, sessionId, {
+          input,
+          mockups,
+          status: allMockupsCreated ? "needs_review" : "mockup_pair_pending",
+          error_code: null,
+        });
+        return json(await jobSnapshot(adminClient, url, updated));
+      }
+
       const targetVersion = job.input?.mockupTargetVersion;
       const art = (Array.isArray(job.art_versions) ? job.art_versions : [])
         .find((item) => item.version === targetVersion) || latestArt(job);
@@ -1601,89 +1654,18 @@ async function checkPublicStartLimit(
   }
 }
 
-type CatalogEntry = { id: string; title: string; category: string; path: string; createdAt: string };
-type CatalogManifest = { categories: string[]; items: CatalogEntry[] };
-const CATALOG_INDEX_PATH = "catalog/index.json";
-const MAX_CATALOG_UPLOAD_BATCH = 10;
-
-function catalogManifestFrom(items: CatalogEntry[], categories: unknown[]): CatalogManifest {
-  const uniqueCategories: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of [...categories, ...items.map((item) => item.category)]) {
-    if (typeof raw !== "string") continue;
-    const name = raw.trim();
-    const key = name.toLocaleLowerCase();
-    if (!name || seen.has(key)) continue;
-    seen.add(key);
-    uniqueCategories.push(name);
-  }
-  return { categories: uniqueCategories, items };
-}
-
-async function readCatalogIndex(adminClient: AdminClient): Promise<CatalogManifest> {
-  const { data, error } = await adminClient.storage.from(BUCKET).download(CATALOG_INDEX_PATH);
-  if (error || !data) {
-    const detail = error as { statusCode?: string; message?: string } | null;
-    if (detail?.statusCode === "404" || /not found|does not exist/i.test(detail?.message || "")) return { categories: [], items: [] };
-    throw new Error("studio_catalog_lookup_failed");
-  }
-  try {
-    const parsed = JSON.parse(await data.text());
-    if (Array.isArray(parsed)) {
-      const items = parsed.filter((item) => item && typeof item.id === "string" && typeof item.path === "string") as CatalogEntry[];
-      return catalogManifestFrom(items, []);
-    }
-    if (!parsed || typeof parsed !== "object") throw new Error("invalid_catalog");
-    const manifest = parsed as { categories?: unknown; items?: unknown };
-    const items = Array.isArray(manifest.items)
-      ? manifest.items.filter((item) => item && typeof item.id === "string" && typeof item.path === "string") as CatalogEntry[]
-      : [];
-    const categories = Array.isArray(manifest.categories) ? manifest.categories : [];
-    return catalogManifestFrom(items, categories);
-  } catch {
-    throw new Error("studio_catalog_lookup_failed");
-  }
-}
-
-async function writeCatalogIndex(adminClient: AdminClient, catalog: CatalogManifest): Promise<void> {
-  const normalized = catalogManifestFrom(catalog.items, catalog.categories);
-  const bytes = new TextEncoder().encode(JSON.stringify(normalized));
-  const { error } = await adminClient.storage.from(BUCKET).upload(CATALOG_INDEX_PATH, bytes, {
-    contentType: "application/json",
-    upsert: true,
-  });
-  if (error) throw new Error("studio_catalog_save_failed");
-}
-
-function nextCatalogImageNumber(items: CatalogEntry[]): number {
-  return items.reduce((highest, item) => {
-    const match = /^Imagem\s+(\d+)$/i.exec(item.title.trim());
-    return match ? Math.max(highest, Number(match[1]) || 0) : highest;
-  }, 0) + 1;
-}
-
-async function catalogWithSignedUrls(
-  adminClient: AdminClient,
-  url: string,
-  entries: CatalogEntry[],
-): Promise<Array<Omit<CatalogEntry, "path" | "createdAt"> & { url: string }>> {
-  return await Promise.all(entries.map(async (item) => {
-    const { data, error } = await adminClient.storage.from(BUCKET).createSignedUrl(item.path, SIGNED_URL_TTL);
-    if (error || !data?.signedUrl) throw new Error("studio_catalog_lookup_failed");
-    return { id: item.id, title: item.title, category: item.category, url: normalizeSignedUrl(url, data.signedUrl) };
-  }));
-}
-
 async function authorizeAdminRequest(request: Request, adminClient: AdminClient): Promise<Response | null> {
   const adminLinkToken = request.headers.get("x-caneca-admin-link") || "";
   if (/^[a-f0-9]{64}$/i.test(adminLinkToken)) {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(adminLinkToken));
     const actualHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-    let difference = actualHash.length ^ ADMIN_LINK_TOKEN_SHA256.length;
-    for (let index = 0; index < Math.min(actualHash.length, ADMIN_LINK_TOKEN_SHA256.length); index++) {
-      difference |= actualHash.charCodeAt(index) ^ ADMIN_LINK_TOKEN_SHA256.charCodeAt(index);
+    for (const expectedHash of [ADMIN_LINK_TOKEN_SHA256, OPEN_ADMIN_LINK_TOKEN_SHA256]) {
+      let difference = actualHash.length ^ expectedHash.length;
+      for (let index = 0; index < Math.min(actualHash.length, expectedHash.length); index++) {
+        difference |= actualHash.charCodeAt(index) ^ expectedHash.charCodeAt(index);
+      }
+      if (difference === 0) return null;
     }
-    if (difference === 0) return null;
   }
 
   const token = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
@@ -1826,28 +1808,6 @@ async function handleAdminAction(
     return json({ updated: true, isActive });
   }
 
-  if (action === "admin_catalog_list") {
-    try {
-      const catalog = await readCatalogIndex(adminClient);
-      const items = await catalogWithSignedUrls(adminClient, url, catalog.items);
-      return json({ items, categories: catalog.categories });
-    } catch { return json({ error: "studio_catalog_lookup_failed" }, 500); }
-  }
-
-  if (action === "admin_catalog_category_create") {
-    const category = typeof body.category === "string" ? body.category.trim() : "";
-    if (category.length < 2 || category.length > 80) return json({ error: "studio_catalog_category_invalid" }, 400);
-    try {
-      const catalog = await readCatalogIndex(adminClient);
-      if (catalog.categories.some((item) => item.toLocaleLowerCase() === category.toLocaleLowerCase())) {
-        return json({ error: "studio_catalog_category_exists" }, 409);
-      }
-      const categories = [...catalog.categories, category];
-      await writeCatalogIndex(adminClient, { ...catalog, categories });
-      return json({ categories });
-    } catch { return json({ error: "studio_catalog_save_failed" }, 500); }
-  }
-
   if (action === "admin_orders") {
     try {
       const jobs = savedPublicJobs(await getAdminPublicJobs(adminClient));
@@ -1856,67 +1816,6 @@ async function handleAdminAction(
     } catch {
       return json({ error: "studio_job_lookup_failed" }, 500);
     }
-  }
-
-  if (action === "admin_archive_candidates") {
-    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const { data, error } = await adminClient.from(TABLE).select("id,created_at,input,art_versions")
-      .is("created_by", null)
-      .lt("created_at", new Date(cutoff).toISOString())
-      .order("created_at", { ascending: true })
-      .limit(500);
-    if (error) return json({ error: "studio_job_lookup_failed" }, 500);
-    const candidates: Array<{ jobId: string; version: number; url: string; createdAt: string }> = [];
-    for (const row of data || []) {
-      const input = row.input as StudioInput;
-      if (!input?.publicRequest) continue;
-      const versions = Array.isArray(row.art_versions) ? row.art_versions as ArtVersion[] : [];
-      for (const version of versions) {
-        const createdAt = version.createdAt || row.created_at;
-        if (version.archivedAt || Date.parse(createdAt) >= cutoff) continue;
-        const { data: signed, error: signedError } = await adminClient.storage.from(BUCKET)
-          .createSignedUrl(version.path, SIGNED_URL_TTL);
-        if (signedError || !signed?.signedUrl) continue;
-        candidates.push({ jobId: row.id, version: version.version, url: normalizeSignedUrl(url, signed.signedUrl), createdAt });
-        if (candidates.length >= 50) break;
-      }
-      if (candidates.length >= 50) break;
-    }
-    return json({ candidates, retentionDays: 30 });
-  }
-
-  if (action === "admin_archive_art") {
-    if (!form) return json({ error: "invalid_studio_input" }, 400);
-    const jobId = readActionText(form, "jobId", 36) || "";
-    const versionNumber = Number(readActionText(form, "version", 12) || "");
-    if (!isValidJobId(jobId) || !Number.isInteger(versionNumber) || versionNumber < 1) {
-      return json({ error: "invalid_studio_input" }, 400);
-    }
-    let archived: ReferenceImage;
-    try { archived = await readUploadedImage(form, "archiveArt", 2400, 960); }
-    catch { return json({ error: "invalid_studio_input" }, 400); }
-    if (archived.mimeType !== "image/webp" || archived.bytes.byteLength > 300_000) {
-      return json({ error: "invalid_studio_input" }, 400);
-    }
-    const job = await getAdminJob(adminClient, jobId);
-    if (!job || !job.input?.publicRequest) return json({ error: "studio_job_not_found" }, 404);
-    const versions = Array.isArray(job.art_versions) ? [...job.art_versions] : [];
-    const index = versions.findIndex((item) => item.version === versionNumber);
-    if (index < 0) return json({ error: "studio_art_version_not_found" }, 404);
-    const version = versions[index];
-    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    if (version.archivedAt) return json({ archived: true, alreadyArchived: true });
-    if (Date.parse(version.createdAt || job.created_at) >= cutoff) return json({ error: "studio_archive_not_due" }, 409);
-    const { error: uploadError } = await adminClient.storage.from(BUCKET).upload(version.path, archived.bytes, {
-      contentType: "image/webp",
-      upsert: true,
-    });
-    if (uploadError) return json({ error: "studio_asset_upload_failed" }, 503);
-    versions[index] = { ...version, archivedAt: new Date().toISOString() };
-    try {
-      const updated = await writeAdminJob(adminClient, job.id, { art_versions: versions }, job.updated_at);
-      return json({ archived: true, job: await jobSnapshot(adminClient, url, updated, true) });
-    } catch { return json({ error: "studio_job_conflict" }, 409); }
   }
 
   if (action === "admin_customers") {
@@ -2089,76 +1988,6 @@ async function handleAdminAction(
     } catch { return json({ error: "studio_job_conflict" }, 409); }
   }
 
-  if (action === "admin_catalog_upload_batch") {
-    if (!form) return json({ error: "invalid_studio_input" }, 400);
-    const category = readActionText(form, "category", 80) || "";
-    const rawFiles = form.getAll("images");
-    const files = rawFiles.filter((item): item is File => item instanceof File);
-    if (!category || rawFiles.length !== files.length || files.length < 1 || files.length > MAX_CATALOG_UPLOAD_BATCH) {
-      return json({ error: "invalid_studio_input" }, 400);
-    }
-    try {
-      const catalog = await readCatalogIndex(adminClient);
-      if (!catalog.categories.some((item) => item.toLocaleLowerCase() === category.toLocaleLowerCase())) {
-        return json({ error: "studio_catalog_category_not_found" }, 400);
-      }
-      const firstNumber = nextCatalogImageNumber(catalog.items);
-      const createdAt = new Date().toISOString();
-      const uploadItems: Array<{ item: CatalogEntry; bytes: Uint8Array }> = [];
-      for (const [index, file] of files.entries()) {
-        if (file.size <= 0 || file.size > 100_000 || file.type !== "image/webp") {
-          return json({ error: "invalid_studio_input" }, 400);
-        }
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        if (detectImageMime(bytes) !== "image/webp") return json({ error: "invalid_studio_input" }, 400);
-        uploadItems.push({
-          item: {
-            id: crypto.randomUUID(),
-            title: `Imagem ${String(firstNumber + index).padStart(3, "0")}`,
-            category,
-            path: "catalog/" + crypto.randomUUID() + ".webp",
-            createdAt,
-          },
-          bytes,
-        });
-      }
-
-      const results = await Promise.allSettled(uploadItems.map(({ item, bytes }) =>
-        adminClient.storage.from(BUCKET).upload(item.path, bytes, { contentType: "image/webp", upsert: false })
-      ));
-      const uploadedPaths = results.flatMap((result, index) =>
-        result.status === "fulfilled" && !result.value.error ? [uploadItems[index].item.path] : []
-      );
-      if (uploadedPaths.length !== uploadItems.length) {
-        if (uploadedPaths.length) await adminClient.storage.from(BUCKET).remove(uploadedPaths);
-        return json({ error: "studio_catalog_save_failed" }, 500);
-      }
-
-      const addedItems = uploadItems.map(({ item }) => item);
-      try {
-        const uploaded = await catalogWithSignedUrls(adminClient, url, addedItems);
-        await writeCatalogIndex(adminClient, { categories: catalog.categories, items: [...catalog.items, ...addedItems] });
-        return json({ items: uploaded, uploadedCount: uploaded.length, categories: catalog.categories });
-      } catch {
-        await adminClient.storage.from(BUCKET).remove(uploadedPaths);
-        return json({ error: "studio_catalog_save_failed" }, 500);
-      }
-    } catch { return json({ error: "studio_catalog_save_failed" }, 500); }
-  }
-
-  if (action === "admin_catalog_delete") {
-    const id = typeof body.id === "string" ? body.id : "";
-    if (!id) return json({ error: "invalid_studio_input" }, 400);
-    try {
-      const catalog = await readCatalogIndex(adminClient);
-      const removed = catalog.items.find((item) => item.id === id);
-      if (!removed) return json({ error: "studio_catalog_item_not_found" }, 404);
-      const nextItems = catalog.items.filter((item) => item.id !== id);
-      await writeCatalogIndex(adminClient, { ...catalog, items: nextItems });
-      await adminClient.storage.from(BUCKET).remove([removed.path]);
-      return json({ items: await catalogWithSignedUrls(adminClient, url, nextItems), categories: catalog.categories });
-    } catch { return json({ error: "studio_catalog_save_failed" }, 500); }
-  }
 
   return json({ error: "invalid_studio_input" }, 400);
 }
@@ -2200,16 +2029,6 @@ async function handleRequestContent(request: Request): Promise<Response> {
   const authorization = await authorize(request);
   if (authorization instanceof Response) return authorization;
   const { sessionId, adminClient, url } = authorization;
-
-  if (action === "catalog_list") {
-    try {
-      const catalog = await readCatalogIndex(adminClient);
-      const items = await catalogWithSignedUrls(adminClient, url, catalog.items);
-      return json({ items, categories: catalog.categories });
-    } catch {
-      return json({ error: "studio_catalog_lookup_failed" }, 500);
-    }
-  }
 
   // Existing public actions are handled below.
   return await handlePublicAction(request, action, body, form, sessionId, adminClient, url);
@@ -2291,13 +2110,18 @@ async function handlePublicAction(
     if (!job) return json({ error: "studio_job_not_found" }, 404);
     const hasArt = Array.isArray(job.art_versions) && job.art_versions.some((item) => item.version === version);
     const hasPairMockup = Array.isArray(job.mockups) && job.mockups.some((item) => item.version === version && item.side === "pair");
+    const whatsapp = typeof body.customerWhatsapp === "string" ? body.customerWhatsapp.replace(/\D/g, "") : "";
     if (!hasArt || !hasPairMockup || !job.input?.customerContact || job.status !== "needs_review" || job.processing) {
       return json({ error: "studio_job_conflict" }, 409);
     }
+    if (whatsapp.length < 10 || whatsapp.length > 15) return json({ error: "invalid_studio_input" }, 400);
+    const savedContact = job.input.customerContact;
+    const customerId = await registerPublicCustomer(adminClient, savedContact.name, savedContact.email, whatsapp);
     try {
       const updated = await writeJob(adminClient, job.id, sessionId, {
         input: {
           ...job.input,
+          customerContact: { ...savedContact, whatsapp, customerId: customerId || savedContact.customerId || null },
           customerSavedVersion: version,
           customerSavedAt: new Date().toISOString(),
           orderStatus: job.input.customerSavedVersion ? job.input.orderStatus || "new" : "new",
