@@ -83,10 +83,15 @@
   .storefront-customer-meta{margin-left:50px;text-align:left}
 }
 @media(max-width:420px){
+  .storefront-admin-heading{flex-direction:column;align-items:stretch;gap:12px}
+  .storefront-admin-refresh{width:100%;min-height:44px}
+  .storefront-admin-tabs button{min-height:42px}
   .storefront-reference-fields{grid-template-columns:1fr}
   .storefront-file-input{grid-column:auto}
   .storefront-reference-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .storefront-order-title{flex-direction:column}
   .storefront-order-title select{max-width:100%}
   .storefront-order-actions{flex-direction:column;align-items:stretch}
+  .storefront-order-actions>*{min-height:42px}
+  .storefront-contact a{overflow-wrap:anywhere}
 }
