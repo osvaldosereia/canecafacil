@@ -10,6 +10,11 @@ const ART_SIZE = "2400x960";
 const SIGNED_URL_TTL = 900;
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 const PUBLIC_APP_ORIGIN = "https://osvaldosereia.github.io";
+const PUBLIC_APP_ORIGINS = new Set([
+  PUBLIC_APP_ORIGIN,
+  "https://www.canecafacil.com.br",
+  "https://canecafacil.com.br",
+]);
 const PUBLIC_START_LIMIT = 5;
 const ADMIN_LINK_TOKEN_SHA256 = "a6cca6fb0ba184203861554acea0ec1cc612508d554555d1ee33a599a388b2a2";
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1824,11 +1829,7 @@ async function handleAdminAction(
   return json({ error: "invalid_studio_input" }, 400);
 }
 
-async function handleRequest(request: Request): Promise<Response> {
-  if (request.headers.get("origin") !== PUBLIC_APP_ORIGIN) {
-    return json({ error: "studio_origin_not_allowed" }, 403);
-  }
-  if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+async function handleRequestContent(request: Request): Promise<Response> {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
 
   const contentType = request.headers.get("content-type") || "";
@@ -1863,6 +1864,37 @@ async function handleRequest(request: Request): Promise<Response> {
       return json({ error: "studio_catalog_lookup_failed" }, 500);
     }
   }
+
+  // Existing public actions are handled below.
+  return await handlePublicAction(request, action, body, form, sessionId, adminClient, url);
+}
+
+async function handleRequest(request: Request): Promise<Response> {
+  const origin = request.headers.get("origin") || "";
+  if (!PUBLIC_APP_ORIGINS.has(origin)) {
+    return json({ error: "studio_origin_not_allowed" }, 403);
+  }
+  if (request.method === "OPTIONS") {
+    return new Response("ok", {
+      headers: { ...corsHeaders, "Access-Control-Allow-Origin": origin, "Vary": "Origin" },
+    });
+  }
+
+  const response = await handleRequestContent(request);
+  response.headers.set("Access-Control-Allow-Origin", origin);
+  response.headers.set("Vary", "Origin");
+  return response;
+}
+
+async function handlePublicAction(
+  request: Request,
+  action: string,
+  body: Record<string, unknown>,
+  form: FormData | null,
+  sessionId: string,
+  adminClient: AdminClient,
+  url: string,
+): Promise<Response> {
 
   if (action === "latest") {
     const { data, error } = await adminClient.from(TABLE).select("*")
