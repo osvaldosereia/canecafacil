@@ -4,8 +4,17 @@ import { readAdminAccessTokenFromLocation } from '../lib/admin-access';
 import './StorefrontAdminPage.css';
 
 type Contact = { name: string; email: string; whatsapp: string; customerId?: string | null };
-type Asset = { version: number; variantIndex?: number; url: string; createdAt?: string | null; archivedAt?: string | null };
-type Mockup = { version: number; side: 'pair' | 'left' | 'right'; url: string };
+type Asset = { version: number; variantIndex?: number; url: string | null; createdAt?: string | null; archivedAt?: string | null; deletedAt?: string | null };
+type Mockup = { version: number; side: 'pair' | 'left' | 'right'; url: string | null };
+type CustomerCreation = {
+  projectId: string;
+  title: string;
+  status: string;
+  createdAt: string;
+  publicRequest?: { name?: string; phrase?: string; generatedPhrase?: string; referenceTitle?: string; referenceCategory?: string } | null;
+  artVersions: Asset[];
+  mockups: Mockup[];
+};
 type Printing = { approvedVersion: number | null; quantity: number; completed: number; status: 'not_queued' | 'ready' | 'printed' };
 type Order = {
   projectId: string;
@@ -32,7 +41,17 @@ type Order = {
   printing: Printing;
   createdAt: string;
 };
-type Customer = { id: string | null; name: string; email: string; whatsapp: string; orderCount: number; lastOrderAt: string };
+type Customer = {
+  id: string | null;
+  name: string;
+  email: string;
+  whatsapp: string;
+  orderCount: number;
+  creationCount: number;
+  artworkCount: number;
+  lastOrderAt: string;
+};
+type CustomerArtworkPage = { creations: CustomerCreation[]; total: number; hasMore: boolean; nextOffset: number };
 type Reference = { id: string; title: string; category: string; url: string };
 type Tab = 'orders' | 'customers' | 'references';
 type ReferenceUploadProgress = { completed: number; total: number; label: string };
@@ -135,6 +154,8 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
   const [tab, setTab] = useState<Tab>('orders');
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customerArtworks, setCustomerArtworks] = useState<Record<string, CustomerArtworkPage>>({});
+  const [loadingCustomerEmail, setLoadingCustomerEmail] = useState('');
   const [references, setReferences] = useState<Reference[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState('');
@@ -150,55 +171,29 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
   const [referenceFiles, setReferenceFiles] = useState<File[]>([]);
   const [referenceProgress, setReferenceProgress] = useState<ReferenceUploadProgress | null>(null);
   const referenceInput = useRef<HTMLInputElement>(null);
-  const archiving = useRef(false);
 
-  async function compressArtwork(blob: Blob): Promise<File> {
-    const image = await createImageBitmap(blob);
-    if (image.width !== 2400 || image.height !== 960) {
-      image.close();
-      throw new Error('archive_dimensions_invalid');
-    }
-    const canvas = document.createElement('canvas');
-    canvas.width = 2400;
-    canvas.height = 960;
-    const context = canvas.getContext('2d');
-    if (!context) { image.close(); throw new Error('archive_compression_failed'); }
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    image.close();
-    for (const quality of [0.64, 0.56, 0.48, 0.4, 0.32, 0.24]) {
-      const result = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
-      if (result && result.size <= 300_000) return new File([result], 'caneca-arte-arquivada.webp', { type: 'image/webp' });
-    }
-    throw new Error('archive_compression_failed');
-  }
 
-  async function archiveOldArtwork() {
-    if (archiving.current) return;
-    archiving.current = true;
-    let archivedCount = 0;
+  async function loadCustomerArtworks(customer: Customer, append = false) {
+    const email = customer.email.trim().toLowerCase();
+    if (!email || loadingCustomerEmail === email) return;
+    const current = customerArtworks[email];
+    if (!append && current) return;
+    setLoadingCustomerEmail(email);
+    setError('');
     try {
-      for (let batch = 0; batch < 20; batch++) {
-        const { candidates } = await invoke<{ candidates: Array<{ jobId: string; version: number; url: string; createdAt: string }> }>(client, { action: 'admin_archive_candidates' });
-        if (!candidates?.length) break;
-        const eligible = candidates.filter((item) => Date.now() - Date.parse(item.createdAt) >= 30 * 24 * 60 * 60 * 1000);
-        if (!eligible.length) break;
-        const item = eligible[0];
-        const response = await fetch(item.url, { credentials: 'omit' });
-        if (!response.ok) break;
-        const compressed = await compressArtwork(await response.blob());
-        const form = new FormData();
-        form.set('action', 'admin_archive_art');
-        form.set('jobId', item.jobId);
-        form.set('version', String(item.version));
-        form.set('archiveArt', compressed);
-        await invoke(client, form);
-        archivedCount += 1;
-      }
-      if (archivedCount) setNotice(`${archivedCount} arte${archivedCount === 1 ? '' : 's'} com mais de 30 dias foi${archivedCount === 1 ? '' : 'ram'} compactada${archivedCount === 1 ? '' : 's'} para arquivo.`);
+      const page = await invoke<CustomerArtworkPage>(client, {
+        action: 'admin_customer_artworks',
+        email,
+        offset: append ? current?.nextOffset || 0 : 0,
+      });
+      setCustomerArtworks((previous) => {
+        const existing = append ? previous[email]?.creations || [] : [];
+        return { ...previous, [email]: { ...page, creations: [...existing, ...(page.creations || [])] } };
+      });
     } catch {
-      // A falha é recuperada na próxima abertura do painel; o original permanece no armazenamento.
+      setError('Não foi possível carregar as artes deste cliente.');
     } finally {
-      archiving.current = false;
+      setLoadingCustomerEmail('');
     }
   }
 
@@ -216,7 +211,7 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
       setReferences(referencesResult.items || []);
       setCategories(referencesResult.categories || [...new Set((referencesResult.items || []).map((item) => item.category))]);
       setNotes(Object.fromEntries((ordersResult.orders || []).map((item) => [item.projectId, item.adminNotes || ''])));
-      void archiveOldArtwork();
+
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -415,7 +410,7 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
         <button type="button" className={tab === 'customers' ? 'is-active' : ''} onClick={() => setTab('customers')}>Clientes <b>{customers.length}</b></button>
         <button type="button" className={tab === 'references' ? 'is-active' : ''} onClick={() => setTab('references')}>Referências <b>{references.length}</b></button>
       </nav>
-      <p className="storefront-retention-note">As artes ficam em resolução de impressão por 30 dias. Depois, o painel compacta os arquivos antigos ao ser aberto.</p>
+      <p className="storefront-retention-note">As artes ficam em resolução de impressão por 15 dias. Depois, o sistema remove os arquivos automaticamente; o cadastro e as anotações permanecem.</p>
 
       {error ? <p className="storefront-admin-alert" role="alert">{error}</p> : null}
       {notice ? <p className="storefront-admin-notice" role="status">{notice}</p> : null}
@@ -435,7 +430,9 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
             : request?.phrase ?? (request?.kind === 'phrase' ? request.text : '');
           return <article className="storefront-order" key={order.projectId}>
             <div className="storefront-order-visual">
-              {mockup ? <img src={mockup.url} alt="Mockup escolhido pelo cliente" /> : art ? <img src={art.url} alt="Arte escolhida pelo cliente" /> : <span>☕</span>}
+              {mockup?.url ? <img src={mockup.url} alt="Mockup escolhido pelo cliente" />
+                : art?.url ? <img src={art.url} alt="Arte escolhida pelo cliente" />
+                  : art ? <span className="storefront-order-expired">Arquivos expirados após 15 dias</span> : <span>☕</span>}
             </div>
             <div className="storefront-order-content">
               <div className="storefront-order-title"><div><small>Solicitação · {dateLabel(order.customerSavedAt || order.createdAt)}</small><h2>{order.title}</h2></div>
@@ -455,13 +452,13 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
                 {!requestName && !requestPhrase ? <strong>Sem nome ou frase personalizada</strong> : null}
                 <small>{request.generatedTheme ? 'Tema identificado: ' + request.generatedTheme + ' · ' : ''}Inspiração: {request.referenceTitle} · {request.referenceCategory}</small>
               </div> : null}
-              {art ? <div className="storefront-order-actions">
+              {art?.url ? <div className="storefront-order-actions">
                 <a className="storefront-admin-button is-secondary" href={art.url} download={'canecafacil-' + order.projectId + '-v' + version + '.webp'}>Baixar arte 2400 × 960</a>
                 {printing.approvedVersion !== version ? <button className="storefront-admin-button" type="button" disabled={saving === order.projectId} onClick={() => void approvePrint(order)}>Liberar para impressão</button>
                   : <button className="storefront-admin-button" type="button" disabled={saving === order.projectId || printing.status === 'printed'} onClick={() => void recordPrint(order)}>
                     {printing.status === 'printed' ? 'Impressão registrada' : `Registrar impressão (${printing.completed}/${printing.quantity})`}
                   </button>}
-              </div> : null}
+              </div> : art ? <p className="storefront-art-expired">Arquivo de impressão removido após 15 dias. O registro do pedido foi mantido.</p> : null}
               <label className="storefront-notes">Anotações internas<textarea value={notes[order.projectId] ?? order.adminNotes ?? ''}
                 onChange={(event) => setNotes((current) => ({ ...current, [order.projectId]: event.target.value }))} rows={2} placeholder="Observações para a equipe" /></label>
               <button className="storefront-save-note" type="button" disabled={saving === order.projectId} onClick={() => void updateOrder(order)}>
@@ -473,14 +470,51 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
       </div> : null}
 
       {!loading && tab === 'customers' ? <div className="storefront-customer-list">
-        {!customers.length ? <div className="storefront-admin-empty"><strong>Nenhum cliente ainda.</strong><span>O cadastro aparece após a primeira geração de mockup e arte salva.</span></div> : null}
-        {customers.map((customer, index) => <article className="storefront-customer" key={customer.id || customer.whatsapp + index}>
+        {!customers.length ? <div className="storefront-admin-empty"><strong>Nenhum cliente ainda.</strong><span>O cadastro aparece assim que a pessoa gera sua primeira arte com nome e e-mail.</span></div> : null}
+        {customers.map((customer, index) => <article className="storefront-customer" key={customer.id || customer.email || index}>
           <div className="storefront-customer-avatar" aria-hidden="true">{customer.name.trim().charAt(0).toUpperCase() || 'C'}</div>
-          <div className="storefront-customer-details">{editingCustomer === customer.id ? <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} aria-label="Nome do cliente" /> : <strong>{customer.name}</strong>}
-            <span>{customer.email}</span><a href={'https://wa.me/' + customer.whatsapp.replace(/\D/g, '')} target="_blank" rel="noreferrer">{customer.whatsapp}</a></div>
-          <div className="storefront-customer-meta"><strong>{customer.orderCount} {customer.orderCount === 1 ? 'solicitação' : 'solicitações'}</strong><span>Última: {dateLabel(customer.lastOrderAt)}</span></div>
+          <div className="storefront-customer-details">{editingCustomer === customer.id ? <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} aria-label="Nome do cliente" /> : <strong>{customer.name || 'Cliente'}</strong>}
+            <span>{customer.email}</span>
+            {customer.whatsapp ? <a href={'https://wa.me/' + customer.whatsapp.replace(/\D/g, '')} target="_blank" rel="noreferrer">{customer.whatsapp}</a> : <small>WhatsApp ainda não informado</small>}
+          </div>
+          <div className="storefront-customer-meta">
+            <strong>{customer.artworkCount} {customer.artworkCount === 1 ? 'arte' : 'artes'}</strong>
+            <span>{customer.creationCount} {customer.creationCount === 1 ? 'criação' : 'criações'}</span>
+            <span>Última: {dateLabel(customer.lastOrderAt)}</span>
+          </div>
           {customer.id ? editingCustomer === customer.id ? <div className="storefront-customer-actions"><button type="button" onClick={() => void saveCustomer(customer)} disabled={saving === customer.id}>Salvar</button><button type="button" onClick={() => setEditingCustomer(null)}>Cancelar</button></div>
             : <button type="button" className="storefront-save-note" onClick={() => { setEditingCustomer(customer.id); setCustomerName(customer.name); }}>Editar cadastro</button> : null}
+          {customer.creationCount ? <details className="storefront-customer-artworks" onToggle={(event) => {
+            if (event.currentTarget.open) void loadCustomerArtworks(customer);
+          }}>
+            <summary>Ver artes e mockups ({customer.artworkCount})</summary>
+            {loadingCustomerEmail === customer.email.trim().toLowerCase() && !customerArtworks[customer.email.trim().toLowerCase()] ? <p className="storefront-customer-art-loading">Carregando artes…</p> : null}
+            <div className="storefront-customer-artwork-list">
+              {(customerArtworks[customer.email.trim().toLowerCase()]?.creations || []).map((creation) => <section className="storefront-customer-creation" key={creation.projectId}>
+                <div className="storefront-customer-creation-heading">
+                  <strong>{creation.title}</strong><span>{dateLabel(creation.createdAt)} · {creation.publicRequest?.referenceTitle || 'Arte personalizada'}</span>
+                </div>
+                <div className="storefront-customer-creation-assets">
+                  {creation.artVersions.map((art) => art.url
+                    ? <a className="storefront-customer-art-link" key={'art-' + art.version} href={art.url} target="_blank" rel="noreferrer">
+                      <img src={art.url} alt={'Arte horizontal, versão ' + art.version} loading="lazy" />
+                      <span>Arte horizontal · v{art.version}</span>
+                    </a>
+                    : <span className="storefront-customer-art-expired" key={'art-' + art.version}>Arte v{art.version} · arquivo expirado</span>)}
+                  {creation.mockups.filter((mockup) => mockup.side === 'pair').map((mockup) => mockup.url
+                    ? <a className="storefront-customer-art-link is-square" key={'mockup-' + mockup.version} href={mockup.url} target="_blank" rel="noreferrer">
+                      <img src={mockup.url} alt="Mockup quadrado com os dois lados da caneca" loading="lazy" />
+                      <span>Mockup quadrado · v{mockup.version}</span>
+                    </a>
+                    : <span className="storefront-customer-art-expired" key={'mockup-' + mockup.version}>Mockup · arquivo expirado</span>)}
+                </div>
+              </section>)}
+            </div>
+            {loadingCustomerEmail === customer.email.trim().toLowerCase() && customerArtworks[customer.email.trim().toLowerCase()] ? <p className="storefront-customer-art-loading">Carregando mais artes…</p> : null}
+            {customerArtworks[customer.email.trim().toLowerCase()]?.hasMore ? <button className="storefront-customer-load-more" type="button"
+              disabled={loadingCustomerEmail === customer.email.trim().toLowerCase()}
+              onClick={() => void loadCustomerArtworks(customer, true)}>Carregar mais artes</button> : null}
+          </details> : null}
         </article>)}
       </div> : null}
 

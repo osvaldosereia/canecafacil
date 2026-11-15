@@ -8,6 +8,8 @@ const IMAGE_QUALITY = "medium";
 const REVIEW_MODEL = "gpt-6.1-terra";
 const PHRASE_MODEL = "gpt-6-luna";
 const ART_SIZE = "2400x960";
+const ARTWORK_RETENTION_DAYS = 15;
+const ARTWORK_RETENTION_MS = ARTWORK_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const SIGNED_URL_TTL = 900;
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 const PUBLIC_APP_ORIGIN = "https://osvaldosereia.github.io";
@@ -85,7 +87,10 @@ type StudioInput = {
   reviewRequested?: boolean;
   pendingEdit?: { baseVersion: number; instruction: string; side?: GenerationSide } | null;
   mockupTargetVersion?: number | null;
-  mockupReferencePaths?: { version: number; leftPath: string; rightPath: string } | null;
+  mockupReferencePaths?: { version: number; leftPath: string; rightPath: string; createdAt?: string; deletedAt?: string | null } | null;
+  referenceDeletedAt?: string | null;
+  assetsRetentionCompletedAt?: string | null;
+  assetsRetentionLastCheckedAt?: string | null;
   printing?: PrintState;
   printHistory?: PrintState[];
 };
@@ -110,11 +115,12 @@ type ArtVersion = {
   instruction?: string | null;
   createdAt?: string;
   archivedAt?: string | null;
+  deletedAt?: string | null;
   generationSide?: GenerationSide;
   updatedSides?: Side[];
   configuration?: SavedCreationConfiguration;
 };
-type MockupAsset = { version: number; side: Side | "front" | "back" | "pair"; path: string };
+type MockupAsset = { version: number; side: Side | "front" | "back" | "pair"; path: string; createdAt?: string; deletedAt?: string | null };
 type PrintState = {
   approvedVersion: number | null;
   quantity: number;
@@ -912,7 +918,6 @@ async function jobSnapshot(
   const artVersions = await Promise.all((Array.isArray(job.art_versions) ? job.art_versions : []).map(async (version) => {
     const { data, error } = await adminClient.storage.from(BUCKET)
       .createSignedUrl(version.path, SIGNED_URL_TTL);
-    if (error || !data?.signedUrl) throw new Error("studio_job_lookup_failed");
     return {
       version: version.version,
       variantIndex: version.variantIndex,
@@ -921,6 +926,7 @@ async function jobSnapshot(
       instruction: version.instruction ?? null,
       createdAt: version.createdAt ?? null,
       archivedAt: version.archivedAt ?? null,
+      deletedAt: version.deletedAt ?? null,
       generationSide: version.generationSide || job.input?.generationSide || "both",
       updatedSides: version.updatedSides || [],
       configuration: version.configuration || {
@@ -934,7 +940,7 @@ async function jobSnapshot(
         imageModel: "Não registrado nesta versão antiga",
         imageQuality: "Não registrada",
       },
-      url: normalizeSignedUrl(url, data.signedUrl),
+      url: !error && data?.signedUrl ? normalizeSignedUrl(url, data.signedUrl) : null,
     };
   }));
   const signedLatest = artVersion ? artVersions.find((version) => version.version === artVersion.version) : null;
@@ -942,10 +948,15 @@ async function jobSnapshot(
   const mockups = await Promise.all((Array.isArray(job.mockups) ? job.mockups : []).map(async (asset) => {
     const { data, error } = await adminClient.storage.from(BUCKET)
       .createSignedUrl(asset.path, SIGNED_URL_TTL);
-    if (error || !data?.signedUrl) throw new Error("studio_job_lookup_failed");
     const side = asset.side === "left" || asset.side === "front" ? "left" : "right";
     const outputSide = asset.side === "pair" ? "pair" : side;
-    return { version: asset.version, side: outputSide, url: normalizeSignedUrl(url, data.signedUrl) };
+    return {
+      version: asset.version,
+      side: outputSide,
+      createdAt: asset.createdAt ?? null,
+      deletedAt: asset.deletedAt ?? null,
+      url: !error && data?.signedUrl ? normalizeSignedUrl(url, data.signedUrl) : null,
+    };
   }));
   return {
     projectId: job.id,
@@ -975,39 +986,57 @@ async function registerPublicCustomer(
   adminClient: AdminClient,
   name: string,
   email: string,
-  whatsappDigits: string,
+  whatsappDigits = "",
 ): Promise<string | null> {
-  const whatsappE164 = whatsappDigits.length <= 11 ? "+55" + whatsappDigits : "+" + whatsappDigits;
+  const normalizedEmail = email.trim().toLowerCase();
+  const digits = whatsappDigits.replace(/\D/g, "");
+  const whatsappE164 = digits ? (digits.length <= 11 ? "+55" + digits : "+" + digits) : null;
   try {
-    let { data: customer, error } = await adminClient.from("customers")
-      .select("id,name,primary_whatsapp_e164")
-      .eq("primary_whatsapp_e164", whatsappE164)
+    let customer: { id: string; name: string | null; primary_whatsapp_e164: string | null } | null = null;
+    const linkedEmail = await adminClient.from("customer_emails")
+      .select("customer_id")
+      .eq("email_normalized", normalizedEmail)
+      .limit(1)
       .maybeSingle();
-    if (error) throw error;
+    if (linkedEmail.error) throw linkedEmail.error;
+    if (linkedEmail.data?.customer_id) {
+      const existing = await adminClient.from("customers")
+        .select("id,name,primary_whatsapp_e164")
+        .eq("id", linkedEmail.data.customer_id)
+        .maybeSingle();
+      if (existing.error) throw existing.error;
+      customer = existing.data;
+    }
+
+    if (!customer && whatsappE164) {
+      const existing = await adminClient.from("customers")
+        .select("id,name,primary_whatsapp_e164")
+        .eq("primary_whatsapp_e164", whatsappE164)
+        .maybeSingle();
+      if (existing.error) throw existing.error;
+      customer = existing.data;
+    }
+
     if (!customer) {
       const inserted = await adminClient.from("customers")
         .insert({ name, primary_whatsapp_e164: whatsappE164 })
         .select("id,name,primary_whatsapp_e164")
         .single();
-      if (inserted.error) {
-        const retry = await adminClient.from("customers")
-          .select("id,name,primary_whatsapp_e164")
-          .eq("primary_whatsapp_e164", whatsappE164)
-          .maybeSingle();
-        if (retry.error || !retry.data) throw inserted.error;
-        customer = retry.data;
+      if (inserted.error || !inserted.data) {
+        if (whatsappE164) {
+          const retry = await adminClient.from("customers")
+            .select("id,name,primary_whatsapp_e164")
+            .eq("primary_whatsapp_e164", whatsappE164)
+            .maybeSingle();
+          if (!retry.error && retry.data) customer = retry.data;
+        }
+        if (!customer) throw inserted.error || new Error("customer_insert_failed");
       } else {
         customer = inserted.data;
       }
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
-    const existingEmail = await adminClient.from("customer_emails")
-      .select("id")
-      .eq("customer_id", customer.id)
-      .eq("email_normalized", normalizedEmail)
-      .maybeSingle();
-    if (!existingEmail.error && !existingEmail.data) {
+    if (!linkedEmail.data) {
       const insertedEmail = await adminClient.from("customer_emails").insert({
         customer_id: customer.id,
         email: email.trim(),
@@ -1017,9 +1046,28 @@ async function registerPublicCustomer(
         source: "observed",
         evidence: { origin: "canecafacil_public" },
       });
-      if (insertedEmail.error) console.error("[caneca-studio] customer email was not linked");
+      if (insertedEmail.error) {
+        const retry = await adminClient.from("customer_emails")
+          .select("customer_id")
+          .eq("email_normalized", normalizedEmail)
+          .limit(1)
+          .maybeSingle();
+        if (retry.error || !retry.data?.customer_id) throw insertedEmail.error;
+        const owner = await adminClient.from("customers")
+          .select("id,name,primary_whatsapp_e164")
+          .eq("id", retry.data.customer_id)
+          .maybeSingle();
+        if (owner.error || !owner.data) throw insertedEmail.error;
+        customer = owner.data;
+      }
     }
-    return customer.id as string;
+
+    if (whatsappE164 && customer && !customer.primary_whatsapp_e164) {
+      await adminClient.from("customers").update({ primary_whatsapp_e164: whatsappE164 })
+        .eq("id", customer.id)
+        .is("primary_whatsapp_e164", null);
+    }
+    return customer.id;
   } catch {
     console.error("[caneca-studio] customer contact could not be linked to the existing registry");
     return null;
@@ -1065,6 +1113,108 @@ async function writeAdminJob(
   return data as JobRow;
 }
 
+async function cleanupExpiredPublicAssets(
+  adminClient: AdminClient,
+  offset = 0,
+): Promise<{ deletedFiles: number; processedJobs: number; hasMore: boolean; offset: number; retentionDays: number }> {
+  const pageSize = 50;
+  const safeOffset = Math.max(0, Math.min(1000000, Math.floor(offset / pageSize) * pageSize));
+  const cutoff = Date.now() - ARTWORK_RETENTION_MS;
+  const { data, error } = await adminClient.from(TABLE)
+    .select("id,created_at,updated_at,input,reference_path,art_versions,mockups")
+    .is("created_by", null)
+    .lt("created_at", new Date(cutoff).toISOString())
+    .order("created_at", { ascending: true })
+    .range(safeOffset, safeOffset + pageSize - 1);
+  if (error) throw new Error("studio_asset_retention_lookup_failed");
+
+  let deletedFiles = 0;
+  let processedJobs = 0;
+  for (const row of (data || []) as JobRow[]) {
+    if (!row.input?.publicRequest) continue;
+    const versions = Array.isArray(row.art_versions) ? row.art_versions : [];
+    const mockups = Array.isArray(row.mockups) ? row.mockups : [];
+    const expiredVersions = new Set(versions.filter((item) =>
+      !item.deletedAt && Date.parse(item.createdAt || row.created_at) < cutoff
+    ).map((item) => item.version));
+    const expiredMockups = new Set(mockups.filter((item) =>
+      !item.deletedAt && Date.parse(item.createdAt || row.created_at) < cutoff
+    ).map((item) => item.path));
+    const referenceExpired = Boolean(row.reference_path && !row.input.referenceDeletedAt &&
+      Date.parse(row.created_at) < cutoff);
+    const mockupReferences = row.input.mockupReferencePaths;
+    const mockupReferencesExpired = Boolean(mockupReferences && !mockupReferences.deletedAt &&
+      Date.parse(mockupReferences.createdAt || row.created_at) < cutoff);
+    const paths = [...new Set([
+      ...versions.filter((item) => expiredVersions.has(item.version)).map((item) => item.path),
+      ...mockups.filter((item) => expiredMockups.has(item.path)).map((item) => item.path),
+      ...(referenceExpired && row.reference_path ? [row.reference_path] : []),
+      ...(mockupReferencesExpired && mockupReferences
+        ? [mockupReferences.leftPath, mockupReferences.rightPath]
+        : []),
+    ].filter((path): path is string => Boolean(path)))];
+    if (!paths.length) continue;
+
+    const { error: removeError } = await adminClient.storage.from(BUCKET).remove(paths);
+    if (removeError) {
+      console.error("[caneca-studio] expired artwork removal failed", { jobId: row.id });
+      continue;
+    }
+
+    const deletedAt = new Date().toISOString();
+    const nextVersions = versions.map((item) =>
+      expiredVersions.has(item.version) ? { ...item, deletedAt } : item
+    );
+    const nextMockups = mockups.map((item) =>
+      expiredMockups.has(item.path) ? { ...item, deletedAt } : item
+    );
+    const input: StudioInput = {
+      ...row.input,
+      ...(referenceExpired ? { referenceDeletedAt: deletedAt } : {}),
+      ...(mockupReferencesExpired && mockupReferences
+        ? { mockupReferencePaths: { ...mockupReferences, deletedAt } }
+        : {}),
+      assetsRetentionLastCheckedAt: deletedAt,
+    };
+    const allArtworkExpired = nextVersions.every((item) =>
+      item.deletedAt || Date.parse(item.createdAt || row.created_at) < cutoff
+    );
+    const allMockupsExpired = nextMockups.every((item) =>
+      item.deletedAt || Date.parse(item.createdAt || row.created_at) < cutoff
+    );
+    const sourceExpired = !row.reference_path || referenceExpired || input.referenceDeletedAt;
+    const mockupSourcesExpired = !input.mockupReferencePaths || input.mockupReferencePaths.deletedAt ||
+      Date.parse(input.mockupReferencePaths.createdAt || row.created_at) < cutoff;
+    if (allArtworkExpired && allMockupsExpired && sourceExpired && mockupSourcesExpired) {
+      input.assetsRetentionCompletedAt = deletedAt;
+    }
+    const { error: updateError } = await adminClient.from(TABLE)
+      .update({
+        art_versions: nextVersions,
+        mockups: nextMockups,
+        input,
+        ...(referenceExpired ? { reference_path: null } : {}),
+        updated_at: deletedAt,
+      })
+      .eq("id", row.id)
+      .eq("updated_at", row.updated_at);
+    if (updateError) {
+      console.error("[caneca-studio] expired artwork metadata update failed", { jobId: row.id });
+      continue;
+    }
+    deletedFiles += paths.length;
+    processedJobs += 1;
+  }
+
+  return {
+    deletedFiles,
+    processedJobs,
+    hasMore: (data || []).length === pageSize,
+    offset: safeOffset,
+    retentionDays: ARTWORK_RETENTION_DAYS,
+  };
+}
+
 async function startJob(
   adminClient: AdminClient,
   url: string,
@@ -1072,6 +1222,21 @@ async function startJob(
   form: FormData,
 ): Promise<Response> {
   const { input, reference } = await parseInput(form);
+  if (input.publicRequest) {
+    let customerName = "";
+    let customerEmail = "";
+    try {
+      customerName = readText(form, "customerName", 120, true) || "";
+      customerEmail = readText(form, "customerEmail", 254, true) || "";
+    } catch {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    if (!customerName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    const customerId = await registerPublicCustomer(adminClient, customerName, customerEmail);
+    input.customerContact = { name: customerName, email: customerEmail, whatsapp: "", customerId };
+  }
   if (input.publicRequest?.autoPhrase) {
     if (!reference) return json({ error: "invalid_studio_input" }, 400);
     const apiKey = await resolveOpenAiKey(adminClient);
@@ -1224,7 +1389,7 @@ async function advanceJob(
             : job.reference_path.endsWith(".webp") ? "image/webp" : "image/png",
         };
       }
-      const generated = await openAIImages(apiKey, imagePrompt, ART_SIZE, reference, 3);
+      const generated = await openAIImages(apiKey, imagePrompt, ART_SIZE, reference, 1);
       const createdAt = new Date().toISOString();
       const artVersions: ArtVersion[] = [];
       try {
@@ -1339,7 +1504,7 @@ async function advanceJob(
       await uploadPrivate(adminClient, path, bytes, "image/webp");
       const mockups = [
         ...(Array.isArray(job.mockups) ? job.mockups : []).filter((asset) => asset.version !== art.version),
-        { version: art.version, side: "pair" as const, path },
+        { version: art.version, side: "pair" as const, path, createdAt: new Date().toISOString() },
       ];
       const updated = await writeJob(adminClient, job.id, sessionId, {
         mockups,
@@ -1372,7 +1537,7 @@ async function advanceJob(
       const version = art.version;
       const path = job.id + "/mockup-v" + version + "-" + side + "-" + Date.now() + ".webp";
       await uploadPrivate(adminClient, path, bytes, "image/webp");
-      const mockups = [...(Array.isArray(job.mockups) ? job.mockups : []), { version, side, path }];
+      const mockups = [...(Array.isArray(job.mockups) ? job.mockups : []), { version, side, path, createdAt: new Date().toISOString() }];
       const isLast = side === "right";
       const nextInput = isLast
         ? { ...job.input, mockupTargetVersion: null, mockupReferencePaths: null }
@@ -1534,13 +1699,22 @@ async function authorizeAdminRequest(request: Request, adminClient: AdminClient)
   return null;
 }
 
-async function getAdminPublicJobs(adminClient: AdminClient): Promise<JobRow[]> {
-  const { data, error } = await adminClient.from(TABLE).select("*")
-    .is("created_by", null)
-    .order("updated_at", { ascending: false })
-    .limit(500);
-  if (error) throw new Error("studio_job_lookup_failed");
-  return (data || []).map((item) => item as JobRow);
+async function getAdminPublicJobs(adminClient: AdminClient, maxRows = 500): Promise<JobRow[]> {
+  const pageSize = 500;
+  const limit = Math.max(pageSize, Math.min(10000, maxRows));
+  const jobs: JobRow[] = [];
+  for (let offset = 0; offset < limit; offset += pageSize) {
+    const pageLimit = Math.min(pageSize, limit - offset);
+    const { data, error } = await adminClient.from(TABLE).select("*")
+      .is("created_by", null)
+      .order("updated_at", { ascending: false })
+      .range(offset, offset + pageLimit - 1);
+    if (error) throw new Error("studio_job_lookup_failed");
+    const rows = (data || []).map((item) => item as JobRow);
+    jobs.push(...rows);
+    if (rows.length < pageLimit) break;
+  }
+  return jobs;
 }
 
 function savedPublicJobs(jobs: JobRow[]): JobRow[] {
@@ -1746,47 +1920,98 @@ async function handleAdminAction(
 
   if (action === "admin_customers") {
     try {
-      const jobs = savedPublicJobs(await getAdminPublicJobs(adminClient));
-      const byCustomer = new Map<string, { id: string | null; name: string; email: string; whatsapp: string; orderCount: number; lastOrderAt: string }>();
-      for (const job of jobs) {
-        const contact = job.input?.customerContact;
-        if (!contact) continue;
-        const key = contact.customerId || contact.whatsapp.replace(/\D/g, "");
-        if (!key) continue;
-        const current = byCustomer.get(key) || {
+      const jobs = await getAdminPublicJobs(adminClient, 10000);
+      const publicJobs = jobs.filter((job) => job.input?.publicRequest && job.input?.customerContact?.email?.trim());
+      const byEmail = new Map<string, {
+        id: string | null;
+        name: string;
+        email: string;
+        whatsapp: string;
+        orderCount: number;
+        creationCount: number;
+        artworkCount: number;
+        lastOrderAt: string;
+      }>();
+      for (let index = 0; index < publicJobs.length; index++) {
+        const job = publicJobs[index];
+        const contact = job.input.customerContact!;
+        const normalizedEmail = contact.email.trim().toLowerCase();
+        if (!normalizedEmail) continue;
+        const createdAt = job.created_at;
+        const current = byEmail.get(normalizedEmail) || {
           id: contact.customerId || null,
           name: contact.name,
-          email: contact.email,
-          whatsapp: contact.whatsapp,
+          email: contact.email.trim(),
+          whatsapp: contact.whatsapp || "",
           orderCount: 0,
-          lastOrderAt: job.input.customerSavedAt || job.created_at,
+          creationCount: 0,
+          artworkCount: 0,
+          lastOrderAt: createdAt,
         };
-        current.orderCount += 1;
-        if (Date.parse(job.input.customerSavedAt || job.created_at) > Date.parse(current.lastOrderAt)) {
-          current.lastOrderAt = job.input.customerSavedAt || job.created_at;
-        }
-        byCustomer.set(key, current);
+        current.creationCount += 1;
+        current.artworkCount += Array.isArray(job.art_versions) ? job.art_versions.length : 0;
+        if (Number.isInteger(job.input.customerSavedVersion) && Number(job.input.customerSavedVersion) > 0) current.orderCount += 1;
+        if (Date.parse(createdAt) > Date.parse(current.lastOrderAt)) current.lastOrderAt = createdAt;
+        byEmail.set(normalizedEmail, current);
       }
-      const entries = Array.from(byCustomer.values());
-      const ids = entries.map((item) => item.id).filter((id): id is string => Boolean(id));
+      const entries = Array.from(byEmail.values());
+      const ids = [...new Set(entries.map((item) => item.id).filter((id): id is string => Boolean(id)))];
       if (ids.length) {
-        const [{ data: profiles }, { data: emails }] = await Promise.all([
-          adminClient.from("customers").select("id,name,primary_whatsapp_e164,is_active").in("id", ids),
-          adminClient.from("customer_emails").select("customer_id,email").in("customer_id", ids).eq("verification_status", "observed"),
-        ]);
+        const { data: profiles, error } = await adminClient.from("customers")
+          .select("id,name,primary_whatsapp_e164,is_active")
+          .in("id", ids);
+        if (error) throw error;
         const profilesById = new Map((profiles || []).map((item: any) => [item.id, item]));
-        const emailById = new Map<string, string>();
-        for (const item of emails || []) if (!emailById.has(item.customer_id)) emailById.set(item.customer_id, item.email);
         for (const entry of entries) {
           const profile = entry.id ? profilesById.get(entry.id) : null;
           if (profile) {
             entry.name = profile.name || entry.name;
             entry.whatsapp = profile.primary_whatsapp_e164 || entry.whatsapp;
-            entry.email = emailById.get(entry.id!) || entry.email;
           }
         }
       }
       return json({ customers: entries.sort((a, b) => Date.parse(b.lastOrderAt) - Date.parse(a.lastOrderAt)) });
+    } catch {
+      return json({ error: "studio_customer_lookup_failed" }, 500);
+    }
+  }
+
+  if (action === "admin_customer_artworks") {
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const offset = Number.isInteger(body.offset) ? Number(body.offset) : 0;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || offset < 0 || offset > 1000000) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    try {
+      const jobs = await getAdminPublicJobs(adminClient, 10000);
+      const matching = jobs.filter((job) =>
+        job.input?.publicRequest &&
+        job.input?.customerContact?.email?.trim().toLowerCase() === email
+      ).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+      const pageSize = 20;
+      const page = matching.slice(offset, offset + pageSize);
+      const creations: Array<Record<string, unknown>> = [];
+      for (let index = 0; index < page.length; index += 10) {
+        const batch = await Promise.all(page.slice(index, index + 10).map((job) => jobSnapshot(adminClient, url, job)));
+        for (let itemIndex = 0; itemIndex < batch.length; itemIndex++) {
+          const job = page[index + itemIndex];
+          creations.push({
+            projectId: job.id,
+            title: job.title,
+            status: job.status,
+            createdAt: job.created_at,
+            publicRequest: job.input.publicRequest,
+            artVersions: batch[itemIndex]?.artVersions || [],
+            mockups: batch[itemIndex]?.mockups || [],
+          });
+        }
+      }
+      return json({
+        creations,
+        total: matching.length,
+        hasMore: offset + creations.length < matching.length,
+        nextOffset: offset + creations.length,
+      });
     } catch {
       return json({ error: "studio_customer_lookup_failed" }, 500);
     }
@@ -1800,7 +2025,7 @@ async function handleAdminAction(
       .eq("id", customerId).select("id,name,primary_whatsapp_e164").maybeSingle();
     if (error || !data) return json({ error: "studio_customer_update_failed" }, 500);
     try {
-      const jobs = await getAdminPublicJobs(adminClient);
+      const jobs = await getAdminPublicJobs(adminClient, 10000);
       await Promise.all(jobs.filter((job) => job.input?.customerContact?.customerId === customerId).map((job) =>
         adminClient.from(TABLE).update({
           input: { ...job.input, customerContact: { ...job.input.customerContact, name } },
@@ -1957,6 +2182,18 @@ async function handleRequestContent(request: Request): Promise<Response> {
   }
 
   if (!action) return json({ error: "invalid_studio_input" }, 400);
+  if (action === "retention_cleanup") {
+    let clients: ReturnType<typeof serviceClients>;
+    try { clients = serviceClients(); } catch { return json({ error: "studio_job_lookup_failed" }, 503); }
+    try {
+      return json(await cleanupExpiredPublicAssets(
+        clients.adminClient,
+        typeof body.offset === "number" ? body.offset : 0,
+      ));
+    } catch {
+      return json({ error: "studio_asset_retention_failed" }, 500);
+    }
+  }
   if (action.startsWith("admin_")) return await handleAdminAction(request, action, body, form);
 
   const authorization = await authorize(request);
@@ -2266,7 +2503,7 @@ async function handlePublicAction(
     if (!isValidJobId(jobId) || !Number.isInteger(version) || version < 1) {
       return json({ error: "invalid_studio_input" }, 400);
     }
-    if (customerName.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail) ||
+    if (!customerName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail) ||
       customerWhatsapp.length < 10 || customerWhatsapp.length > 15) {
       return json({ error: "invalid_studio_input" }, 400);
     }
@@ -2361,7 +2598,7 @@ async function handlePublicAction(
               ...currentJob.input,
               customerContact: { name: customerName, email: customerEmail, whatsapp: customerWhatsapp, customerId },
               mockupTargetVersion: version,
-              mockupReferencePaths: { version, leftPath, rightPath },
+              mockupReferencePaths: { version, leftPath, rightPath, createdAt: new Date().toISOString() },
             },
             mockups: (Array.isArray(currentJob.mockups) ? currentJob.mockups : [])
               .filter((asset) => asset.version !== version),

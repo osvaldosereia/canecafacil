@@ -12,10 +12,10 @@ type ReferenceIdea = {
 type ArtVersion = {
   version: number;
   variantIndex?: number;
-  url: string;
+  url: string | null;
   configuration?: { mandatoryText?: string[]; artDescription?: string };
 };
-type Mockup = { version: number; side: 'pair' | 'left' | 'right'; url: string };
+type Mockup = { version: number; side: 'pair' | 'left' | 'right'; url: string | null };
 type Contact = { name: string; email: string; whatsapp: string };
 type PublicRequest = {
   text: string;
@@ -51,8 +51,21 @@ type HistoryItem = {
 };
 
 const SESSION_KEY = 'caneca-facil-studio-session-v1';
+const CUSTOMER_PROFILE_KEY = 'caneca-facil-customer-profile-v1';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let fallbackSessionId = '';
+
+function savedCustomerProfile(): Pick<Contact, 'name' | 'email'> {
+  try {
+    const value = JSON.parse(localStorage.getItem(CUSTOMER_PROFILE_KEY) || '{}') as Record<string, unknown>;
+    return {
+      name: typeof value.name === 'string' ? value.name.slice(0, 120) : '',
+      email: typeof value.email === 'string' ? value.email.slice(0, 254) : '',
+    };
+  } catch {
+    return { name: '', email: '' };
+  }
+}
 
 function sessionId(): string {
   try {
@@ -122,7 +135,14 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
   const [job, setJob] = useState<Creation | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [contact, setContact] = useState<Contact>({ name: '', email: '', whatsapp: '' });
+  const [contact, setContact] = useState<Contact>(() => ({ ...savedCustomerProfile(), whatsapp: '' }));
+  useEffect(() => {
+    try {
+      const profile = { name: contact.name.trim(), email: contact.email.trim() };
+      if (profile.name || profile.email) localStorage.setItem(CUSTOMER_PROFILE_KEY, JSON.stringify(profile));
+      else localStorage.removeItem(CUSTOMER_PROFILE_KEY);
+    } catch { /* Private browsing can disable local persistence. */ }
+  }, [contact.name, contact.email]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -152,7 +172,12 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
     const referenceId = request?.referenceId || '';
     setJob(next);
     setSelectedVersion(selected);
-    setContact(next.customerContact || { name: '', email: '', whatsapp: '' });
+    if (next.customerContact) {
+      setContact({
+        ...next.customerContact,
+        whatsapp: next.customerContact.whatsapp || '',
+      });
+    }
     setCupName(request?.name ?? (request?.kind === 'name' ? legacyText : ''));
     setCupPhrase(request?.phrase ?? (request?.kind === 'phrase' && !request?.autoPhrase ? legacyText : request?.generatedPhrase || ''));
     setAutoPhrase(Boolean(request?.autoPhrase));
@@ -164,14 +189,15 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
 
   useEffect(() => {
     if (!drawerOpen) return;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    const root = document.documentElement;
+    const previousOverflowY = root.style.overflowY;
+    root.style.overflowY = 'hidden';
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === 'Escape') setDrawerOpen(false);
     }
     window.addEventListener('keydown', closeOnEscape);
     return () => {
-      document.body.style.overflow = previousOverflow;
+      root.style.overflowY = previousOverflowY;
       window.removeEventListener('keydown', closeOnEscape);
     };
   }, [drawerOpen]);
@@ -258,6 +284,12 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
   async function generateArt(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
+    const customerName = contact.name.trim();
+    const customerEmail = contact.email.trim();
+    if (!customerName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
+      setError('Informe seu nome e um e-mail válido antes de gerar a arte. Pode ser só o primeiro nome.');
+      return;
+    }
     const selected = allReferences.find((item) => item.id === selectedReferenceId);
     if (!selected) {
       setError('Escolha uma imagem de referência para continuar.');
@@ -276,6 +308,8 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
       const reference = await compressedReference(selected);
       const form = new FormData();
       form.set('action', 'start');
+      form.set('customerName', customerName);
+      form.set('customerEmail', customerEmail);
       form.set('title', 'Caneca · ' + titleText.slice(0, 80));
       form.set('creationMode', 'reference');
       form.set('generationSide', 'both');
@@ -290,12 +324,13 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
         referenceCategory: selected.category,
       }));
       form.set('artDescription',
-        'Crie uma arte horizontal original para impressão em caneca, inspirada no tema e no clima da imagem de referência, sem copiar sua composição. Quando houver nome ou frase fornecidos, coloque os textos exatos na metade esquerda. Centralize a ilustração original inspirada na referência na metade direita. Se não houver texto, mantenha a metade esquerda limpa e sem letras, deixando a ilustração na metade direita. Use fundo branco e acabamento suave nas duas bordas externas.');
+        'Crie um arquivo horizontal de impressão para caneca com 2400 × 960 px, dividido em duas metades iguais de 1200 × 960 px. A metade esquerda é destinada ao nome ou à frase exata, e a metade direita à ilustração original inspirada na referência. Em cada metade que tiver arte, centralize o conteúdo dentro da própria metade e mantenha seu limite em aproximadamente 80% da largura e 80% da altura disponíveis (caixa máxima de 960 × 768 px), deixando margens brancas equilibradas de cerca de 10% em todos os lados. Não cruze a divisão central, não encoste nem corte elementos nas bordas externas e não deixe a composição escapar da sua metade. Se não houver nome nem frase, mantenha a metade esquerda branca e limpa. Use fundo branco e acabamento suave nas laterais. A referência deve inspirar, nunca ser copiada; remova assinaturas, marcas d\'água e nomes de sites da referência.');
       form.set('mandatoryText', exactText.join('\n'));
       form.set('reference', reference);
       const created = await studio(client, form) as Creation;
       setJob(created);
-      setNotice('Criando três opções diferentes. Esta tela atualiza sozinha.');
+      if (created.customerContact) setContact({ ...created.customerContact, whatsapp: created.customerContact.whatsapp || '' });
+      setNotice('Criando sua arte horizontal. Esta tela atualiza sozinha.');
     } catch (reason) {
       const code = reason instanceof Error ? reason.message : '';
       setError(code === 'studio_phrase_generation_failed'
@@ -308,9 +343,9 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
   }
 
   async function generateMockup() {
-    if (!job || !chosenArt || busy) return;
+    if (!job || !chosenArt || !chosenArt.url || busy) return;
     const normalizedWhatsapp = contact.whatsapp.replace(/\D/g, '');
-    if (contact.name.trim().length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.email.trim()) ||
+    if (!contact.name.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.email.trim()) ||
       normalizedWhatsapp.length < 10 || normalizedWhatsapp.length > 15) {
       setError('Informe seu nome, um e-mail válido e o WhatsApp com DDD.');
       return;
@@ -373,7 +408,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
     setCupPhrase('');
     setAutoPhrase(false);
     setDrawerOpen(false);
-    setContact({ name: '', email: '', whatsapp: '' });
+    setContact((current) => ({ ...current, whatsapp: '' }));
     setError('');
     setNotice('');
   }
@@ -412,16 +447,17 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
       {job ? (
         <section className="public-result" aria-labelledby="result-title">
           <div className="public-section-head">
-            <div><p className="public-kicker">AS SUAS OPÇÕES</p><h2 id="result-title">Escolha a arte que mais gostou</h2></div>
+            <div><p className="public-kicker">{options.length > 1 ? 'AS SUAS OPÇÕES' : 'ARTE PARA IMPRESSÃO'}</p>
+              <h2 id="result-title">{options.length > 1 ? 'Escolha a arte que mais gostou' : 'Sua arte horizontal'}</h2></div>
             <button className="public-link" type="button" onClick={newCreation}>Começar outra</button>
           </div>
-          {!ready(job) ? <div className="public-loading"><span className="public-spinner" />Criando três opções de arte…</div> : null}
+          {!ready(job) ? <div className="public-loading"><span className="public-spinner" />Criando sua arte horizontal…</div> : null}
           {job.status === 'failed' ? <p className="public-message is-error">A criação não terminou. Você pode começar outra ou abrir uma criação anterior.</p> : null}
-          {options.length ? <div className="public-options">
+          {options.length > 1 ? <div className="public-options">
             {options.map((item) => <button type="button" key={item.version}
               className={'public-option' + (selectedVersion === item.version ? ' is-selected' : '')}
               onClick={() => setSelectedVersion(item.version)} aria-pressed={selectedVersion === item.version}>
-              <img src={item.url} alt={'Arte ' + (item.variantIndex || item.version)} />
+              {item.url ? <img src={item.url} alt={'Arte ' + (item.variantIndex || item.version)} /> : <span className="public-expired-art">Arquivo de impressão expirado</span>}
               <span><strong>Opção {item.variantIndex || item.version}</strong><small>{selectedVersion === item.version ? 'Selecionada' : 'Ver esta opção'}</small></span>
             </button>)}
           </div> : null}
@@ -432,20 +468,22 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
               <p>{resultText ? '“' + resultText + '”' : 'A arte foi criada sem nome ou frase.'}</p>
               {request?.generatedTheme ? <small>Tema percebido na referência: {request.generatedTheme}</small> : null}
             </div>
-            <a href={chosenArt.url} download={'canecafacil-arte-v' + chosenArt.version + '.webp'}>Baixar arte</a>
-            <img src={chosenArt.url} alt="Arte horizontal escolhida para impressão" />
+            {chosenArt.url ? <a href={chosenArt.url} download={'canecafacil-arte-v' + chosenArt.version + '.webp'}>Baixar arte</a>
+              : <span className="public-expired-copy">Arquivo de impressão removido após 15 dias.</span>}
+            {chosenArt.url ? <img src={chosenArt.url} alt="Arte horizontal escolhida para impressão" />
+              : <div className="public-expired-art">A prévia foi removida após 15 dias. Os dados da criação continuam no histórico.</div>}
           </div> : null}
 
-          {pairMockup ? <figure className="public-pair-preview">
+          {pairMockup?.url ? <figure className="public-pair-preview">
             <img src={pairMockup.url} alt="Mockup quadrado com a alça à esquerda na vista superior e a alça à direita na vista inferior" />
             <figcaption>Vista superior: alça à esquerda · vista inferior: alça à direita</figcaption>
           </figure> : null}
 
           {saved ? <div className="public-saved-card"><span aria-hidden="true">✓</span><div><strong>Arte salva</strong><p>A equipe CanecaFácil recebeu sua escolha e seus dados para dar andamento à solicitação.</p></div></div> : null}
 
-          {!saved && chosenArt ? <section className="public-next-step">
+          {!saved && chosenArt?.url ? <section className="public-next-step">
             <div className="public-section-head compact"><div><p className="public-kicker">VEJA NA CANECA</p><h2>Gerar mockup das duas posições</h2></div></div>
-            <p className="public-explain">Informe seus dados para montar uma prévia quadrada com a vista da alça para a esquerda em cima e para a direita embaixo.</p>
+            <p className="public-explain">Seu nome e e-mail já identificam esta criação. Informe o WhatsApp com DDD para gerar a prévia quadrada das duas posições.</p>
             <div className="public-contact-grid">
               <label>Seu nome<input autoComplete="name" value={contact.name} onChange={(event) => setContact({ ...contact, name: event.target.value })} placeholder="Como podemos chamar você?" /></label>
               <label>E-mail<input type="email" autoComplete="email" value={contact.email} onChange={(event) => setContact({ ...contact, email: event.target.value })} placeholder="voce@email.com" /></label>
@@ -500,6 +538,18 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
             <span><small>IMAGEM DE INSPIRAÇÃO</small><strong>{allReferences.find((item) => item.id === selectedReferenceId)?.title}</strong></span>
           </div> : null}
           <form className="public-generator-form" onSubmit={(event) => void generateArt(event)}>
+            <div className="public-contact-grid">
+              <label>Seu nome <small>(pode ser só o primeiro)</small>
+                <input required minLength={1} maxLength={120} autoComplete="name" value={contact.name}
+                  onChange={(event) => setContact({ ...contact, name: event.target.value })}
+                  placeholder="Ex.: Marina" />
+              </label>
+              <label>Seu e-mail
+                <input required type="email" autoComplete="email" maxLength={254} value={contact.email}
+                  onChange={(event) => setContact({ ...contact, email: event.target.value })}
+                  placeholder="voce@email.com" />
+              </label>
+            </div>
             <label className="public-text-label"><span>Nome na Caneca <small>(opcional)</small></span>
               <input maxLength={80} value={cupName} onChange={(event) => setCupName(event.target.value)} placeholder="Ex.: Marina" />
               <small>O nome será reproduzido exatamente como você escrever.</small>
@@ -513,9 +563,9 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
               <span><strong>Criar uma frase automaticamente</strong><small>A IA identifica o tema e o clima da imagem antes de escrever uma frase original.</small></span>
             </label>
             <button className="public-primary public-generate" type="submit" disabled={busy || !selectedReferenceId}>
-              {busy ? 'Criando suas três artes…' : 'Gerar 3 opções de arte'}
+              {busy ? 'Criando sua arte…' : 'Gerar arte horizontal'}
             </button>
-            <p className="public-unlimited">Você pode criar quantas opções quiser.</p>
+            <p className="public-unlimited">Seu nome e e-mail ficam salvos neste navegador para facilitar as próximas criações.</p>
           </form>
         </section>
       </div> : null}

@@ -1,6 +1,7 @@
 *,*::before,*::after{box-sizing:border-box}
 html,body,#root{min-height:100%}
-body{margin:0;background:#fbfaf7;color:#27332d;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+html{min-height:100%;overflow-y:scroll;scrollbar-gutter:stable}
+body{min-height:100vh;margin:0;background:#fbfaf7;color:#27332d;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 button,input{font:inherit}
 button{touch-action:manipulation}
 .public-caneca{width:min(1120px,100%);min-height:100vh;margin:0 auto;padding:0 24px 28px}
@@ -73,6 +74,7 @@ button{touch-action:manipulation}
 .public-drawer-reference small{color:#7d8b7e;font-size:9px;font-weight:760;letter-spacing:.1em}
 .public-drawer-reference strong{overflow:hidden;color:#344338;font-size:12px;text-overflow:ellipsis;white-space:nowrap}
 .public-generator-form{display:grid;gap:17px}
+.public-generator-form .public-contact-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 .public-phrase-toggle{display:flex;align-items:flex-start;gap:11px;padding:14px;border:1px solid #dfe8dc;border-radius:13px;background:#f2f7f0;cursor:pointer}
 .public-phrase-toggle>input{width:18px;height:18px;flex:0 0 auto;margin:1px 0 0;accent-color:#477858}
 .public-phrase-toggle>span{display:grid;gap:5px}
@@ -96,6 +98,8 @@ button{touch-action:manipulation}
 .public-selected-copy p{margin:0;color:#7b857d;font-size:12px}
 .public-selected-art>a{color:#477858;font-size:11px;font-weight:700;text-decoration:none}
 .public-selected-art>img{grid-column:1/-1;display:block;width:100%;max-height:320px;object-fit:contain;border-radius:10px;background:#f2f1ec}
+.public-expired-art{display:grid;min-height:100px;place-items:center;padding:18px;border-radius:10px;color:#7b857d;background:#f2f1ec;font-size:12px;text-align:center}
+.public-expired-copy{color:#7b857d;font-size:10px;text-align:right}
 .public-next-step{margin-top:19px;padding:20px;border:1px solid #e7e9e2;border-radius:15px;background:#fbfbf8}
 .public-section-head.compact{margin-bottom:9px}
 .public-explain{margin:0 0 14px;color:#707b72;font-size:12px;line-height:1.55}
@@ -144,6 +148,7 @@ button{touch-action:manipulation}
   .public-reference>strong{font-size:11px}
   .public-reference>small{font-size:10px}
   .public-contact-grid{grid-template-columns:1fr;gap:9px}
+  .public-generator-form .public-contact-grid{grid-template-columns:1fr}
   .public-contact-grid input{min-height:48px;font-size:14px}
   .public-primary{min-height:52px}
   .public-drawer-backdrop{align-items:flex-end;justify-content:center}
