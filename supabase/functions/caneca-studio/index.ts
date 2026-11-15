@@ -1323,31 +1323,64 @@ async function checkPublicStartLimit(
 }
 
 type CatalogEntry = { id: string; title: string; category: string; path: string; createdAt: string };
+type CatalogManifest = { categories: string[]; items: CatalogEntry[] };
 const CATALOG_INDEX_PATH = "catalog/index.json";
+const MAX_CATALOG_UPLOAD_BATCH = 10;
 
-async function readCatalogIndex(adminClient: AdminClient): Promise<CatalogEntry[]> {
+function catalogManifestFrom(items: CatalogEntry[], categories: unknown[]): CatalogManifest {
+  const uniqueCategories: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of [...categories, ...items.map((item) => item.category)]) {
+    if (typeof raw !== "string") continue;
+    const name = raw.trim();
+    const key = name.toLocaleLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    uniqueCategories.push(name);
+  }
+  return { categories: uniqueCategories, items };
+}
+
+async function readCatalogIndex(adminClient: AdminClient): Promise<CatalogManifest> {
   const { data, error } = await adminClient.storage.from(BUCKET).download(CATALOG_INDEX_PATH);
   if (error || !data) {
     const detail = error as { statusCode?: string; message?: string } | null;
-    if (detail?.statusCode === "404" || /not found|does not exist/i.test(detail?.message || "")) return [];
+    if (detail?.statusCode === "404" || /not found|does not exist/i.test(detail?.message || "")) return { categories: [], items: [] };
     throw new Error("studio_catalog_lookup_failed");
   }
   try {
     const parsed = JSON.parse(await data.text());
-    if (!Array.isArray(parsed)) throw new Error("invalid_catalog");
-    return parsed.filter((item) => item && typeof item.id === "string" && typeof item.path === "string") as CatalogEntry[];
+    if (Array.isArray(parsed)) {
+      const items = parsed.filter((item) => item && typeof item.id === "string" && typeof item.path === "string") as CatalogEntry[];
+      return catalogManifestFrom(items, []);
+    }
+    if (!parsed || typeof parsed !== "object") throw new Error("invalid_catalog");
+    const manifest = parsed as { categories?: unknown; items?: unknown };
+    const items = Array.isArray(manifest.items)
+      ? manifest.items.filter((item) => item && typeof item.id === "string" && typeof item.path === "string") as CatalogEntry[]
+      : [];
+    const categories = Array.isArray(manifest.categories) ? manifest.categories : [];
+    return catalogManifestFrom(items, categories);
   } catch {
     throw new Error("studio_catalog_lookup_failed");
   }
 }
 
-async function writeCatalogIndex(adminClient: AdminClient, entries: CatalogEntry[]): Promise<void> {
-  const bytes = new TextEncoder().encode(JSON.stringify(entries));
+async function writeCatalogIndex(adminClient: AdminClient, catalog: CatalogManifest): Promise<void> {
+  const normalized = catalogManifestFrom(catalog.items, catalog.categories);
+  const bytes = new TextEncoder().encode(JSON.stringify(normalized));
   const { error } = await adminClient.storage.from(BUCKET).upload(CATALOG_INDEX_PATH, bytes, {
     contentType: "application/json",
     upsert: true,
   });
   if (error) throw new Error("studio_catalog_save_failed");
+}
+
+function nextCatalogImageNumber(items: CatalogEntry[]): number {
+  return items.reduce((highest, item) => {
+    const match = /^Imagem\s+(\d+)$/i.exec(item.title.trim());
+    return match ? Math.max(highest, Number(match[1]) || 0) : highest;
+  }, 0) + 1;
 }
 
 async function catalogWithSignedUrls(
@@ -1507,9 +1540,24 @@ async function handleAdminAction(
 
   if (action === "admin_catalog_list") {
     try {
-      const items = await catalogWithSignedUrls(adminClient, url, await readCatalogIndex(adminClient));
-      return json({ items });
+      const catalog = await readCatalogIndex(adminClient);
+      const items = await catalogWithSignedUrls(adminClient, url, catalog.items);
+      return json({ items, categories: catalog.categories });
     } catch { return json({ error: "studio_catalog_lookup_failed" }, 500); }
+  }
+
+  if (action === "admin_catalog_category_create") {
+    const category = typeof body.category === "string" ? body.category.trim() : "";
+    if (category.length < 2 || category.length > 80) return json({ error: "studio_catalog_category_invalid" }, 400);
+    try {
+      const catalog = await readCatalogIndex(adminClient);
+      if (catalog.categories.some((item) => item.toLocaleLowerCase() === category.toLocaleLowerCase())) {
+        return json({ error: "studio_catalog_category_exists" }, 409);
+      }
+      const categories = [...catalog.categories, category];
+      await writeCatalogIndex(adminClient, { ...catalog, categories });
+      return json({ categories });
+    } catch { return json({ error: "studio_catalog_save_failed" }, 500); }
   }
 
   if (action === "admin_orders") {
@@ -1702,26 +1750,60 @@ async function handleAdminAction(
     } catch { return json({ error: "studio_job_conflict" }, 409); }
   }
 
-  if (action === "admin_catalog_upload") {
+  if (action === "admin_catalog_upload_batch") {
     if (!form) return json({ error: "invalid_studio_input" }, 400);
-    const title = readActionText(form, "title", 120) || "";
     const category = readActionText(form, "category", 80) || "";
-    const file = form.get("image");
-    if (!title || !category || !(file instanceof File) || file.size <= 0 || file.size > 100_000 || file.type !== "image/webp") {
+    const rawFiles = form.getAll("images");
+    const files = rawFiles.filter((item): item is File => item instanceof File);
+    if (!category || rawFiles.length !== files.length || files.length < 1 || files.length > MAX_CATALOG_UPLOAD_BATCH) {
       return json({ error: "invalid_studio_input" }, 400);
     }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    if (detectImageMime(bytes) !== "image/webp") return json({ error: "invalid_studio_input" }, 400);
-    const item: CatalogEntry = { id: crypto.randomUUID(), title, category, path: "catalog/" + crypto.randomUUID() + ".webp", createdAt: new Date().toISOString() };
     try {
-      const entries = await readCatalogIndex(adminClient);
-      const { error } = await adminClient.storage.from(BUCKET).upload(item.path, bytes, { contentType: "image/webp", upsert: false });
-      if (error) throw error;
-      try { await writeCatalogIndex(adminClient, [...entries, item]); } catch (error) {
-        await adminClient.storage.from(BUCKET).remove([item.path]);
-        throw error;
+      const catalog = await readCatalogIndex(adminClient);
+      if (!catalog.categories.some((item) => item.toLocaleLowerCase() === category.toLocaleLowerCase())) {
+        return json({ error: "studio_catalog_category_not_found" }, 400);
       }
-      return json({ items: await catalogWithSignedUrls(adminClient, url, [...entries, item]) });
+      const firstNumber = nextCatalogImageNumber(catalog.items);
+      const createdAt = new Date().toISOString();
+      const uploadItems: Array<{ item: CatalogEntry; bytes: Uint8Array }> = [];
+      for (const [index, file] of files.entries()) {
+        if (file.size <= 0 || file.size > 100_000 || file.type !== "image/webp") {
+          return json({ error: "invalid_studio_input" }, 400);
+        }
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        if (detectImageMime(bytes) !== "image/webp") return json({ error: "invalid_studio_input" }, 400);
+        uploadItems.push({
+          item: {
+            id: crypto.randomUUID(),
+            title: `Imagem ${String(firstNumber + index).padStart(3, "0")}`,
+            category,
+            path: "catalog/" + crypto.randomUUID() + ".webp",
+            createdAt,
+          },
+          bytes,
+        });
+      }
+
+      const results = await Promise.allSettled(uploadItems.map(({ item, bytes }) =>
+        adminClient.storage.from(BUCKET).upload(item.path, bytes, { contentType: "image/webp", upsert: false })
+      ));
+      const uploadedPaths = results.flatMap((result, index) =>
+        result.status === "fulfilled" && !result.value.error ? [uploadItems[index].item.path] : []
+      );
+      if (uploadedPaths.length !== uploadItems.length) {
+        if (uploadedPaths.length) await adminClient.storage.from(BUCKET).remove(uploadedPaths);
+        return json({ error: "studio_catalog_save_failed" }, 500);
+      }
+
+      const addedItems = uploadItems.map(({ item }) => item);
+      try {
+        const uploaded = await catalogWithSignedUrls(adminClient, url, addedItems);
+        await writeCatalogIndex(adminClient, { categories: catalog.categories, items: [...catalog.items, ...addedItems] });
+        return json({ items: uploaded, uploadedCount: uploaded.length, categories: catalog.categories });
+      } catch {
+        await adminClient.storage.from(BUCKET).remove(uploadedPaths);
+        return json({ error: "studio_catalog_save_failed" }, 500);
+      }
     } catch { return json({ error: "studio_catalog_save_failed" }, 500); }
   }
 
@@ -1729,13 +1811,13 @@ async function handleAdminAction(
     const id = typeof body.id === "string" ? body.id : "";
     if (!id) return json({ error: "invalid_studio_input" }, 400);
     try {
-      const entries = await readCatalogIndex(adminClient);
-      const removed = entries.find((item) => item.id === id);
+      const catalog = await readCatalogIndex(adminClient);
+      const removed = catalog.items.find((item) => item.id === id);
       if (!removed) return json({ error: "studio_catalog_item_not_found" }, 404);
-      const next = entries.filter((item) => item.id !== id);
-      await writeCatalogIndex(adminClient, next);
+      const nextItems = catalog.items.filter((item) => item.id !== id);
+      await writeCatalogIndex(adminClient, { ...catalog, items: nextItems });
       await adminClient.storage.from(BUCKET).remove([removed.path]);
-      return json({ items: await catalogWithSignedUrls(adminClient, url, next) });
+      return json({ items: await catalogWithSignedUrls(adminClient, url, nextItems), categories: catalog.categories });
     } catch { return json({ error: "studio_catalog_save_failed" }, 500); }
   }
 
@@ -1774,7 +1856,8 @@ async function handleRequest(request: Request): Promise<Response> {
 
   if (action === "catalog_list") {
     try {
-      const items = await catalogWithSignedUrls(adminClient, url, await readCatalogIndex(adminClient));
+      const catalog = await readCatalogIndex(adminClient);
+      const items = await catalogWithSignedUrls(adminClient, url, catalog.items);
       return json({ items });
     } catch {
       return json({ error: "studio_catalog_lookup_failed" }, 500);
