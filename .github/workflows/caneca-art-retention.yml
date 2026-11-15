@@ -1,0 +1,41 @@
+name: CanecaFácil artwork retention
+
+on:
+  schedule:
+    - cron: '15 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  remove-expired-artwork:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Remove artwork older than 15 days
+        shell: bash
+        env:
+          SUPABASE_URL: https://ssbesxgaijknwsjbsbcz.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: sb_publishable_tFXHtH0HCXZepVtwgKElIg_DxS76Gu8
+        run: |
+          set -euo pipefail
+          offset=0
+          for page in $(seq 1 200); do
+            response="$(curl --fail --silent --show-error --retry 3 --retry-all-errors \
+              --request POST \
+              --header "apikey: ${SUPABASE_PUBLISHABLE_KEY}" \
+              --header "Origin: https://www.canecafacil.com.br" \
+              --header "Content-Type: application/json" \
+              --data "{\"action\":\"retention_cleanup\",\"offset\":${offset}}" \
+              "${SUPABASE_URL}/functions/v1/caneca-studio")"
+            has_more="$(jq -r '.hasMore // false' <<<"${response}")"
+            removed="$(jq -r '.deletedFiles // 0' <<<"${response}")"
+            echo "Página ${page}: ${removed} arquivo(s) removido(s)."
+            if [[ "${has_more}" != "true" ]]; then
+              exit 0
+            fi
+            offset=$((offset + 50))
+          done
+          echo "A limpeza excedeu 10.000 registros e continuará na próxima execução."
+          exit 1
