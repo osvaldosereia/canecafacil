@@ -42,6 +42,11 @@ const CUSTOMER_PROFILE_KEY = 'caneca-facil-customer-profile-v1';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const themes: MugTheme[] = ['Pet', 'Família', 'Amigo'];
+const themeDetails: Record<MugTheme, { symbol: string; description: string }> = {
+  Pet: { symbol: '🐾', description: 'Seu companheiro em desenho' },
+  Família: { symbol: '⌂', description: 'Uma lembrança cheia de afeto' },
+  Amigo: { symbol: '♡', description: 'Um presente com personalidade' },
+};
 let fallbackSessionId = '';
 
 function savedCustomerProfile(): Pick<Contact, 'name' | 'email'> {
@@ -321,66 +326,190 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
           <span className="public-brand-mark" aria-hidden="true">c</span>
           <span>Caneca<span>Fácil</span></span>
         </a>
-        {job ? <button className="public-reset" type="button" onClick={newCreation} disabled={busy}>+ Nova criação</button> : <span className="public-trust">Personalizada por você</span>}
+        {!job ? (
+          <>
+            <nav className="public-main-nav" aria-label="Navegação principal">
+              <a href="#how-it-works">Como funciona</a>
+              <a href="#create-form">Personalizar</a>
+            </nav>
+            <a className="public-header-cta" href="#create-form">Criar minha caneca <span aria-hidden="true">↗</span></a>
+          </>
+        ) : (
+          <button className="public-reset" type="button" onClick={newCreation} disabled={busy}>+ Nova criação</button>
+        )}
       </header>
-
-      <section className="public-hero" id="top">
-        <div>
-          <p className="public-kicker">SUA IDEIA, SUA CANECA</p>
-          <h1>Uma lembrança<br /><em>desenhada para você.</em></h1>
-          <p>Envie uma foto, escolha o tema e escreva o nome. Vamos transformar a imagem em uma ilustração original.</p>
-        </div>
-        <div className="public-hero-art" aria-hidden="true"><span>☕</span><i>✦</i><b>✿</b></div>
-      </section>
 
       {error ? <p className="public-message is-error" role="alert">{error}</p> : null}
       {notice ? <p className="public-message is-notice" role="status">{notice}</p> : null}
 
       {!job ? (
-        <form className="public-create-form" onSubmit={(event) => void generateArt(event)}>
-          <div className="public-form-heading">
-            <p className="public-kicker">PERSONALIZE SUA CANECA</p>
-            <h2>Vamos criar seu desenho</h2>
-            <p>O nome ficará à esquerda e a ilustração original à direita.</p>
-          </div>
-          <label className="public-field">
-            <span>Tema</span>
-            <select required value={theme} onChange={(event) => setTheme(event.target.value as MugTheme | '')}>
-              <option value="">Selecione Pet, Família ou Amigo</option>
-              {themes.map((item) => <option value={item} key={item}>{item}</option>)}
-            </select>
-          </label>
+        <>
+          <section className="public-hero" id="top">
+            <div className="public-hero-copy">
+              <p className="public-kicker">UM PRESENTE COM A SUA HISTÓRIA</p>
+              <h1>Sua foto vira<br /><em>uma lembrança única.</em></h1>
+              <p>Crie uma caneca com o nome de alguém especial e uma ilustração original inspirada na sua foto. Compare três estilos antes de escolher.</p>
+              <div className="public-hero-actions">
+                <a className="public-primary public-hero-cta" href="#create-form">
+                  Criar minha caneca <span aria-hidden="true">↗</span>
+                </a>
+                <small>Comece com uma foto, um tema e um nome.</small>
+              </div>
+            </div>
 
-          <label className="public-upload">
-            <span className="public-field-title">Imagem para transformar em desenho</span>
-            <span className="public-upload-control">{imageFile ? 'Trocar imagem' : 'Escolher imagem'}</span>
-            <span className="public-upload-hint">{imageFile ? imageFile.name : 'PNG, JPEG ou WebP · até 8 MB'}</span>
-            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage} />
-          </label>
-          {imagePreview ? <figure className="public-upload-preview"><img src={imagePreview} alt="Prévia da imagem enviada" /></figure> : null}
+            <figure className="public-hero-showcase">
+              <figcaption className="public-preview-caption">
+                <span>PRÉVIA ILUSTRATIVA</span>
+                <small>Exemplo de personalização</small>
+              </figcaption>
+              <svg className="public-mug-illustration" viewBox="0 0 480 300" aria-hidden="true" focusable="false">
+                <defs>
+                  <linearGradient id="mug-body" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stopColor="#fff" />
+                    <stop offset="58%" stopColor="#f9f8f2" />
+                    <stop offset="100%" stopColor="#e8ebe3" />
+                  </linearGradient>
+                  <linearGradient id="mug-handle" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stopColor="#e9e8df" />
+                    <stop offset="55%" stopColor="#fff" />
+                    <stop offset="100%" stopColor="#d7dbd1" />
+                  </linearGradient>
+                </defs>
+                <ellipse cx="218" cy="252" rx="155" ry="17" fill="#34483a" opacity=".1" />
+                <path d="M326 101h34c49 0 49 105 0 105h-34" fill="none" stroke="#d7d9d0" strokeWidth="35" />
+                <path d="M327 101h32c36 0 36 105 0 105h-32" fill="none" stroke="url(#mug-handle)" strokeWidth="23" />
+                <path d="M84 66c4 60 5 123 20 164 47 26 181 26 228 0 15-41 16-104 20-164z" fill="url(#mug-body)" stroke="#d9ddd3" strokeWidth="2" />
+                <ellipse cx="218" cy="66" rx="134" ry="25" fill="#fff" stroke="#d9ddd3" strokeWidth="2" />
+                <ellipse cx="218" cy="67" rx="117" ry="15" fill="#f2f1e9" opacity=".8" />
+                <path d="M112 215c46 19 164 19 211 0" fill="none" stroke="#e2e5dc" strokeWidth="2" />
+                <text x="145" y="157" fill="#4f7758" fontFamily="Georgia,serif" fontSize="31" fontStyle="italic">Luna</text>
+                <path d="M246 167c-3-14 10-22 21-13 11-9 24-1 21 13-2 8-11 14-21 21-10-7-19-13-21-21z" fill="#d89984" />
+                <circle cx="250" cy="137" r="5" fill="#d89984" />
+                <circle cx="263" cy="131" r="5" fill="#d89984" />
+                <circle cx="277" cy="132" r="5" fill="#d89984" />
+                <circle cx="289" cy="140" r="5" fill="#d89984" />
+                <path d="M130 178c10-8 19-8 29 0m-31 8c11-5 21-5 31 0" fill="none" stroke="#9dae8f" strokeWidth="2" strokeLinecap="round" />
+                <path d="M304 176c6-8 12-10 20-10m-18 19c7-5 14-6 21-5" fill="none" stroke="#9dae8f" strokeWidth="2" strokeLinecap="round" />
+                <circle cx="162" cy="191" r="3" fill="#c19a56" />
+                <circle cx="300" cy="193" r="3" fill="#c19a56" />
+              </svg>
+              <div className="public-preview-sides">
+                <span><b>ESQUERDA</b> nome personalizado</span>
+                <span><b>DIREITA</b> desenho inspirado na foto</span>
+              </div>
+            </figure>
+          </section>
 
-          <label className="public-field">
-            <span>Nome na caneca <b>obrigatório</b></span>
-            <input required maxLength={80} value={mugName} onChange={(event) => setMugName(event.target.value)} placeholder="Ex.: Mel, Marina ou Família Silva" />
-            <small>O nome será escrito exatamente como você informou.</small>
-          </label>
+          <section className="public-trust-strip" aria-label="O que você recebe na criação">
+            <span><b>01</b> Três estilos para comparar</span>
+            <span><b>02</b> Arte horizontal para impressão</span>
+            <span><b>03</b> Mockup com os dois lados</span>
+          </section>
 
-          <div className="public-contact-grid">
-            <label className="public-field">
-              <span>Seu nome</span>
-              <input required autoComplete="name" maxLength={120} value={contact.name} onChange={(event) => updateContact('name', event.target.value)} placeholder="Como podemos chamar você?" />
+          <section className="public-how-it-works" id="how-it-works">
+            <div className="public-section-intro">
+              <p className="public-kicker">SIMPLES DE PERSONALIZAR</p>
+              <h2>Uma ideia sua, em três passos.</h2>
+              <p>Você participa das escolhas. A inteligência artificial cria propostas visuais a partir da foto e do tema que você enviar.</p>
+            </div>
+            <div className="public-step-grid">
+              <article className="public-step-card">
+                <span className="public-step-number">01</span>
+                <h3>Escolha o tema</h3>
+                <p>Pet, Família ou Amigo: conte para quem é esse presente.</p>
+              </article>
+              <article className="public-step-card">
+                <span className="public-step-number">02</span>
+                <h3>Envie a foto e o nome</h3>
+                <p>A foto inspira um desenho original. O nome fica no lado esquerdo da caneca.</p>
+              </article>
+              <article className="public-step-card">
+                <span className="public-step-number">03</span>
+                <h3>Compare as opções</h3>
+                <p>Veja três estilos, a arte aberta e uma prévia quadrada dos dois lados.</p>
+              </article>
+            </div>
+          </section>
+
+          <form id="create-form" className="public-create-form" onSubmit={(event) => void generateArt(event)}>
+            <div className="public-form-heading">
+              <p className="public-kicker">VAMOS CRIAR A SUA</p>
+              <h2>Personalize sua caneca</h2>
+              <p>A ilustração fica à direita e o nome à esquerda. Você verá a arte antes de registrar sua escolha.</p>
+            </div>
+
+            <fieldset className="public-theme-fieldset">
+              <legend><span className="public-form-step">1</span> Para quem é a caneca?</legend>
+              <div className="public-theme-options">
+                {themes.map((item) => (
+                  <label className={'public-theme-option' + (theme === item ? ' is-selected' : '')} key={item}>
+                    <input type="radio" name="theme" value={item} required checked={theme === item} onChange={() => setTheme(item)} />
+                    <span className="public-theme-symbol" aria-hidden="true">{themeDetails[item].symbol}</span>
+                    <span className="public-theme-copy"><strong>{item}</strong><small>{themeDetails[item].description}</small></span>
+                    <span className="public-theme-check" aria-hidden="true">✓</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
+            <label className="public-upload">
+              <span className="public-field-title"><span className="public-form-step">2</span> Escolha uma foto para inspirar o desenho</span>
+              <span className="public-upload-control">{imageFile ? 'Trocar foto' : 'Escolher foto'}</span>
+              <span className="public-upload-hint">{imageFile ? imageFile.name : 'PNG, JPEG ou WebP · até 8 MB'}</span>
+              <input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage} />
             </label>
+            {imagePreview ? <figure className="public-upload-preview"><img src={imagePreview} alt="Prévia da foto escolhida" /><figcaption>Esta imagem servirá de inspiração para uma ilustração original.</figcaption></figure> : null}
+
             <label className="public-field">
-              <span>Seu e-mail</span>
-              <input required type="email" autoComplete="email" maxLength={254} value={contact.email} onChange={(event) => updateContact('email', event.target.value)} placeholder="voce@email.com" />
+              <span><span className="public-form-step">3</span> Nome na caneca <b>obrigatório</b></span>
+              <input required maxLength={80} value={mugName} onChange={(event) => setMugName(event.target.value)} placeholder="Ex.: Luna, Thor ou Família Oliveira" />
+              <small>Confira a grafia. O nome informado será enviado junto da arte para a revisão da sua escolha.</small>
             </label>
-          </div>
-          <p className="public-privacy">Seu nome e e-mail ficam salvos neste navegador para facilitar uma próxima criação.</p>
-          <button className="public-primary" type="submit" disabled={busy}>
-            {busy ? 'Preparando sua criação…' : 'Gerar 3 artes e mockups'}
-          </button>
-          <p className="public-generation-note">Cada opção terá uma arte horizontal e uma prévia quadrada com os dois lados da caneca.</p>
-        </form>
+
+            <div className="public-personal-data">
+              <div className="public-personal-data-copy">
+                <p className="public-kicker">PARA IDENTIFICAR SUAS CRIAÇÕES</p>
+                <h3>Como podemos encontrar suas artes?</h3>
+                <p>Usamos seu nome e e-mail para vincular cada criação ao seu cadastro.</p>
+              </div>
+              <div className="public-contact-grid">
+                <label className="public-field">
+                  <span>Seu nome</span>
+                  <input required autoComplete="name" maxLength={120} value={contact.name} onChange={(event) => updateContact('name', event.target.value)} placeholder="Como podemos chamar você?" />
+                </label>
+                <label className="public-field">
+                  <span>Seu e-mail</span>
+                  <input required type="email" autoComplete="email" maxLength={254} value={contact.email} onChange={(event) => updateContact('email', event.target.value)} placeholder="voce@email.com" />
+                </label>
+              </div>
+            </div>
+            <p className="public-privacy">Seu nome e e-mail ficam salvos neste navegador para facilitar outra criação e são enviados para vincular as artes ao seu cadastro.</p>
+            <button className="public-primary public-generate-button" type="submit" disabled={busy}>
+              {busy ? 'Preparando sua criação…' : 'Criar 3 opções de arte'}
+              {!busy ? <span aria-hidden="true">↗</span> : null}
+            </button>
+            <p className="public-generation-note">Cada opção inclui uma arte horizontal para impressão e uma prévia quadrada com os dois lados da caneca.</p>
+          </form>
+
+          <section className="public-faq" aria-labelledby="faq-title">
+            <div className="public-section-intro">
+              <p className="public-kicker">ANTES DE COMEÇAR</p>
+              <h2 id="faq-title">Dúvidas rápidas</h2>
+            </div>
+            <details>
+              <summary>A foto será copiada para a caneca?</summary>
+              <p>Não. Ela serve como referência para criar uma ilustração nova, adaptada ao tema escolhido.</p>
+            </details>
+            <details>
+              <summary>Vou ver a caneca antes de decidir?</summary>
+              <p>Sim. Cada opção mostra a arte horizontal e um mockup quadrado com os dois lados da caneca.</p>
+            </details>
+            <details>
+              <summary>Ao escolher uma arte, o pedido já é confirmado?</summary>
+              <p>A escolha fica registrada para o atendimento. O pagamento e o cálculo do envio serão apresentados quando a finalização da encomenda estiver disponível.</p>
+            </details>
+          </section>
+        </>
       ) : (
         <section className="public-result" aria-labelledby="result-title">
           <div className="public-section-head">
@@ -427,17 +556,17 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
           </div> : null}
 
           {ready(job) && selectedArt && selectedMockup?.url ? orderSaved ? (
-            <div className="public-saved-card"><span aria-hidden="true">✓</span><div><strong>Escolha registrada</strong><p>O pedido ainda não foi enviado. A etapa de encomenda pelo WhatsApp será configurada depois.</p></div></div>
+            <div className="public-saved-card"><span aria-hidden="true">✓</span><div><strong>Escolha guardada</strong><p>Sua opção ficou registrada no atendimento. O pagamento e o cálculo do envio serão apresentados quando a finalização da encomenda estiver disponível.</p></div></div>
           ) : (
             <section className="public-order-step">
-              <div className="public-section-head compact"><div><p className="public-kicker">QUER ENCOMENDAR?</p><h2>Confirme a opção escolhida</h2></div></div>
-              <p className="public-explain">Informe seu telefone somente agora. Sua escolha ficará registrada para a equipe; o envio pelo WhatsApp será ativado em uma próxima etapa.</p>
+              <div className="public-section-head compact"><div><p className="public-kicker">PRÓXIMO PASSO</p><h2>Registre sua escolha</h2></div></div>
+              <p className="public-explain">Informe seu WhatsApp para guardar esta opção no atendimento. Este registro não confirma o pagamento nem o envio da caneca.</p>
               <label className="public-field">
                 <span>WhatsApp com DDD</span>
                 <input type="tel" autoComplete="tel" maxLength={24} value={contact.whatsapp} onChange={(event) => updateContact('whatsapp', event.target.value)} placeholder="(65) 99999-9999" />
               </label>
               <button className="public-primary" type="button" disabled={busy} onClick={() => void saveDesign()}>
-                {busy ? 'Registrando sua escolha…' : 'Quero encomendar esta opção'}
+                {busy ? 'Registrando sua escolha…' : 'Registrar minha escolha'}
               </button>
             </section>
           ) : null}
