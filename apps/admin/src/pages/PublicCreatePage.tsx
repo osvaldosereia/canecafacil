@@ -332,7 +332,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
               <a href="#how-it-works">Como funciona</a>
               <a href="#create-form">Personalizar</a>
             </nav>
-            <a className="public-header-cta" href="#create-form">Criar minha caneca <span aria-hidden="true">↗</span></a>
+            <a className="public-header-cta" href="#create-form">Criar minha caneca <span className="public-arrow" aria-hidden="true"><svg viewBox="0 0 20 20" focusable="false"><path d="M4 10h12M11 5l5 5-5 5" /></svg></span></a>
           </>
         ) : (
           <button className="public-reset" type="button" onClick={newCreation} disabled={busy}>+ Nova criação</button>
@@ -351,7 +351,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
               <p>Crie uma caneca com o nome de alguém especial e uma ilustração original inspirada na sua foto. Compare três estilos antes de escolher.</p>
               <div className="public-hero-actions">
                 <a className="public-primary public-hero-cta" href="#create-form">
-                  Criar minha caneca <span aria-hidden="true">↗</span>
+                  Criar minha caneca <span className="public-arrow" aria-hidden="true"><svg viewBox="0 0 20 20" focusable="false"><path d="M4 10h12M11 5l5 5-5 5" /></svg></span>
                 </a>
                 <small>Comece com uma foto, um tema e um nome.</small>
               </div>
@@ -486,7 +486,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
             <p className="public-privacy">Seu nome e e-mail ficam salvos neste navegador para facilitar outra criação e são enviados para vincular as artes ao seu cadastro.</p>
             <button className="public-primary public-generate-button" type="submit" disabled={busy}>
               {busy ? 'Preparando sua criação…' : 'Criar 3 opções de arte'}
-              {!busy ? <span aria-hidden="true">↗</span> : null}
+              {!busy ? <span className="public-arrow" aria-hidden="true"><svg viewBox="0 0 20 20" focusable="false"><path d="M4 10h12M11 5l5 5-5 5" /></svg></span> : null}
             </button>
             <p className="public-generation-note">Cada opção inclui uma arte horizontal para impressão e uma prévia quadrada com os dois lados da caneca.</p>
           </form>
