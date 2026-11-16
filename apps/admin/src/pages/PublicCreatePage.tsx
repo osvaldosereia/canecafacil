@@ -1,9 +1,11 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import './PublicCreatePage.css';
 
 type MugTheme = 'Pet' | 'Família' | 'Amigo';
-type PublicArtModel = { id: string; name: string; description: string; direction: string; svg: string };
+type PublicArtModelCategory = { id: string; theme: MugTheme; name: string; imageCount: number };
+type PublicArtModel = { id: string; categoryId: string; url: string; createdAt: string };
+type PublicArtModelListing = { categories: PublicArtModelCategory[]; models: PublicArtModel[] };
 type ArtVersion = {
   version: number;
   variantIndex?: number;
@@ -21,6 +23,8 @@ type PublicRequest = {
   phrase?: string;
   styleModelId?: string;
   styleModelName?: string;
+  styleModelCategory?: string;
+  styleModelCategoryId?: string;
 };
 type Creation = {
   projectId: string;
@@ -51,37 +55,6 @@ const themeDetails: Record<MugTheme, { symbol: string; description: string }> = 
   Família: { symbol: '⌂', description: 'Uma lembrança cheia de afeto' },
   Amigo: { symbol: '♡', description: 'Um presente com personalidade' },
 };
-const artModels: PublicArtModel[] = [
-  {
-    id: 'aquarela',
-    name: 'Aquarela suave',
-    description: 'Leve, delicada e afetiva',
-    direction: 'soft transparent watercolor washes, gentle paper texture, delicate hand-drawn contours, subtle color blooms and warm organic accents',
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="520" viewBox="0 0 720 520"><rect width="720" height="520" rx="32" fill="#fbf7ef"/><circle cx="197" cy="217" r="120" fill="#e9c5b7" opacity=".42"/><circle cx="474" cy="188" r="104" fill="#b8d2c4" opacity=".48"/><path d="M176 345c11-97 48-151 120-151s109 54 120 151c-56 48-184 48-240 0Z" fill="#d7b18d" opacity=".68"/><ellipse cx="296" cy="189" rx="72" ry="91" fill="#e9c5b7" opacity=".76"/><path d="M238 185c7-70 111-99 154-33-21-18-42-21-64-10-23-21-64-9-90 43Z" fill="#866957" opacity=".72"/><path d="M271 204c8 7 16 7 24 0m30 0c8 7 16 7 24 0m-45 35c13 11 27 11 40 0" fill="none" stroke="#745d50" stroke-width="5" stroke-linecap="round" opacity=".7"/><path d="M456 324c24-44 40-80 46-120m-40 93c-43-10-60-32-66-68m69 39c42-7 65-28 75-62m-98 78c-29 1-51 15-66 43m112-41c27 7 45 24 55 50" fill="none" stroke="#6e9272" stroke-width="7" stroke-linecap="round" opacity=".68"/><circle cx="408" cy="208" r="16" fill="#d68c7b" opacity=".68"/><circle cx="493" cy="161" r="12" fill="#d6b46a" opacity=".7"/><circle cx="557" cy="249" r="11" fill="#d68c7b" opacity=".62"/></svg>`,
-  },
-  {
-    id: 'cartoon',
-    name: 'Cartoon delicado',
-    description: 'Contorno limpo e expressão marcante',
-    direction: 'a polished original clean-line cartoon, confident rounded outlines, expressive simplified forms, tidy cel shading and a friendly modern character illustration',
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="520" viewBox="0 0 720 520"><rect width="720" height="520" rx="32" fill="#f2f6f2"/><circle cx="355" cy="250" r="173" fill="#e2eddf"/><path d="M212 372c13-104 69-151 143-151s130 47 143 151c-77 56-209 56-286 0Z" fill="#e6b967" stroke="#384b3d" stroke-width="10" stroke-linejoin="round"/><path d="M267 222c-24-33-23-96 7-119 29 27 43 53 43 81m93 38c24-33 23-96-7-119-29 27-43 53-43 81" fill="#da8e77" stroke="#384b3d" stroke-width="10" stroke-linejoin="round"/><ellipse cx="355" cy="211" rx="108" ry="126" fill="#f3d4a8" stroke="#384b3d" stroke-width="10"/><path d="M267 182c11-81 82-117 150-92 23 8 39 23 49 46-31-12-57-8-77 9-38-13-79-1-122 37Z" fill="#705247" stroke="#384b3d" stroke-width="8" stroke-linejoin="round"/><circle cx="321" cy="219" r="9" fill="#35483d"/><circle cx="389" cy="219" r="9" fill="#35483d"/><path d="M337 261c11 13 25 13 36 0" fill="none" stroke="#35483d" stroke-width="8" stroke-linecap="round"/><circle cx="292" cy="251" r="16" fill="#e79784" opacity=".8"/><circle cx="418" cy="251" r="16" fill="#e79784" opacity=".8"/><path d="M185 125l18 23 29-3-18 22 7 29-26-15-26 15 7-29-18-22 29 3z" fill="#e7bb53"/></svg>`,
-  },
-  {
-    id: 'lapis-colorido',
-    name: 'Lápis de cor',
-    description: 'Textura artesanal e traços aparentes',
-    direction: 'layered colored-pencil strokes, visible hand-drawn hatching, tactile paper grain, softly imperfect contours and a refined colored-pencil portrait finish',
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="520" viewBox="0 0 720 520"><rect width="720" height="520" rx="32" fill="#fbf5e8"/><path d="M173 380c13-107 62-162 135-162s122 55 135 162c-59 42-211 42-270 0Z" fill="#a8bd9b" opacity=".68" stroke="#667c63" stroke-width="6" stroke-dasharray="3 8"/><ellipse cx="308" cy="203" rx="91" ry="112" fill="#e2b997" stroke="#916b55" stroke-width="6" stroke-dasharray="2 7"/><path d="M224 201c7-80 97-131 169-71-37-13-69-5-91 17-28-9-52 10-78 54Z" fill="#806452" stroke="#665448" stroke-width="7" stroke-dasharray="4 6"/><path d="M268 211l18 4m48-4 18-4m-72 44c17 13 34 13 51 0" fill="none" stroke="#705747" stroke-width="6" stroke-linecap="round" stroke-dasharray="2 5"/><path d="M440 362c37-43 66-92 76-151m-61 111c-45-4-72-29-86-66m101 31c45-1 74-22 94-55m-103 86c-27 5-51 22-67 52m121-59c30 8 51 29 61 60" fill="none" stroke="#68865d" stroke-width="7" stroke-linecap="round" stroke-dasharray="3 7"/><path d="M464 207l-22-15m52-6 19-22m32 71 25-5m-126 87-25 17m130-9 25 18" fill="none" stroke="#cb9560" stroke-width="5" stroke-linecap="round" stroke-dasharray="2 8"/><circle cx="470" cy="177" r="13" fill="#d77e72"/><circle cx="540" cy="276" r="11" fill="#d8b45e"/></svg>`,
-  },
-  {
-    id: 'guache',
-    name: 'Guache contemporânea',
-    description: 'Cores foscas e formas elegantes',
-    direction: 'contemporary gouache painting with opaque matte pigments, clean layered shapes, restrained palette, soft edges and a polished editorial illustration',
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="520" viewBox="0 0 720 520"><rect width="720" height="520" rx="32" fill="#f7f2e9"/><path d="M155 390c17-115 83-174 182-174s165 59 182 174c-96 54-268 54-364 0Z" fill="#789883"/><path d="M259 222c0-75 35-126 94-126s94 51 94 126-35 128-94 128-94-53-94-128Z" fill="#d8a685"/><path d="M252 215c5-93 53-143 121-143 52 0 88 31 101 84-31-15-63-13-92 3-33-18-76 1-130 56Z" fill="#5e514a"/><path d="M294 234c8 6 15 6 23 0m68 0c8 6 15 6 23 0m-70 38c15 11 30 11 45 0" fill="none" stroke="#52483f" stroke-width="8" stroke-linecap="round"/><path d="M477 336c32-54 50-102 51-151m-46 117c-38-5-63-28-72-66m111 30c38-6 63-24 75-54m-111 91c-28 5-47 20-58 45m127-39c26 9 41 27 49 51" fill="none" stroke="#6c8a65" stroke-width="13" stroke-linecap="round"/><circle cx="470" cy="186" r="17" fill="#d58b72"/><circle cx="557" cy="269" r="16" fill="#d9b45d"/><path d="M186 130l29 24 34-7-18 31 10 34-33-18-31 17 8-34-20-27 35 5z" fill="#d7a968"/></svg>`,
-  },
-];
-const artModelPreview = (model: PublicArtModel) => 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(model.svg);
 let fallbackSessionId = '';
 
 function savedCustomerProfile(): Pick<Contact, 'name' | 'email'> {
@@ -126,22 +99,6 @@ async function studio(client: SupabaseClient, body: FormData | Record<string, un
   throw new Error(code);
 }
 
-async function compressedArtModel(model: PublicArtModel): Promise<File> {
-  const source = new Blob([model.svg], { type: 'image/svg+xml' });
-  const image = await createImageBitmap(source);
-  const canvas = document.createElement('canvas');
-  const factor = Math.min(1, 900 / image.width, 900 / image.height);
-  canvas.width = Math.max(1, Math.round(image.width * factor));
-  canvas.height = Math.max(1, Math.round(image.height * factor));
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('style_model_compression_failed');
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  image.close();
-  const compressed = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', 0.78));
-  if (!compressed || compressed.size > 100_000) throw new Error('style_model_compression_failed');
-  return new File([compressed], model.id + '.webp', { type: 'image/webp' });
-}
-
 const ready = (job: Creation) => job.status === 'needs_review' || job.status === 'failed';
 const digitsOnly = (value: string) => value.replace(/\D/g, '');
 
@@ -150,6 +107,12 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
   const [mugName, setMugName] = useState('');
   const [mugPhrase, setMugPhrase] = useState('');
   const [styleModelId, setStyleModelId] = useState('');
+  const [modelCategories, setModelCategories] = useState<PublicArtModelCategory[]>([]);
+  const [activeModelCategoryId, setActiveModelCategoryId] = useState('');
+  const [artModels, setArtModels] = useState<PublicArtModel[]>([]);
+  const [modelCategoriesLoading, setModelCategoriesLoading] = useState(false);
+  const [modelImagesLoading, setModelImagesLoading] = useState(false);
+  const modelLoadRequest = useRef(0);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState('');
   const [job, setJob] = useState<Creation | null>(null);
@@ -159,6 +122,55 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    const requestId = ++modelLoadRequest.current;
+    setModelCategories([]);
+    setArtModels([]);
+    if (!theme) {
+      setActiveModelCategoryId('');
+      setModelCategoriesLoading(false);
+      setModelImagesLoading(false);
+      return () => { active = false; };
+    }
+    setModelCategoriesLoading(true);
+    void (async () => {
+      const result = await studio(client, { action: 'public_models_list', theme }) as PublicArtModelListing;
+      if (!active || requestId !== modelLoadRequest.current) return;
+      const categories = result.categories || [];
+      setModelCategories(categories);
+      const categoryId = categories.some((category) => category.id === activeModelCategoryId)
+        ? activeModelCategoryId
+        : categories[0]?.id || '';
+      setActiveModelCategoryId(categoryId);
+      setModelCategoriesLoading(false);
+      if (!categoryId) {
+        setArtModels([]);
+        setStyleModelId('');
+        return;
+      }
+      setModelImagesLoading(true);
+      const modelsResult = await studio(client, {
+        action: 'public_models_list',
+        theme,
+        categoryId,
+      }) as PublicArtModelListing;
+      if (!active || requestId !== modelLoadRequest.current) return;
+      const models = modelsResult.models || [];
+      setArtModels(models);
+      setStyleModelId((current) => models.some((model) => model.id === current) ? current : '');
+      setModelImagesLoading(false);
+    })().catch(() => {
+      if (active && requestId === modelLoadRequest.current) setError('Não foi possível carregar as categorias e imagens deste tema.');
+    }).finally(() => {
+      if (active && requestId === modelLoadRequest.current) {
+        setModelCategoriesLoading(false);
+        setModelImagesLoading(false);
+      }
+    });
+    return () => { active = false; };
+  }, [client, theme]);
 
   useEffect(() => {
     try {
@@ -185,7 +197,8 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
   const savedMugName = job?.publicRequest?.name || job?.publicRequest?.mugName || '';
   const savedMugPhrase = job?.publicRequest?.phrase || '';
   const currentTheme = job?.publicRequest?.theme || '';
-  const currentStyleModel = job?.publicRequest?.styleModelName || '';
+  const currentStyleModel = job?.publicRequest?.styleModelCategory || job?.publicRequest?.styleModelName || '';
+  const selectedModelCategory = modelCategories.find((item) => item.id === activeModelCategoryId) ?? null;
 
   function updateContact(field: 'name' | 'email' | 'whatsapp', value: string) {
     setContact((current) => ({ ...current, [field]: value }));
@@ -198,7 +211,8 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
     setTheme(themes.includes(next.publicRequest?.theme as MugTheme) ? next.publicRequest?.theme as MugTheme : '');
     setMugName(next.publicRequest?.name || next.publicRequest?.mugName || '');
     setMugPhrase(next.publicRequest?.phrase || '');
-    setStyleModelId(artModels.some((item) => item.id === next.publicRequest?.styleModelId) ? next.publicRequest?.styleModelId || '' : '');
+    setStyleModelId(next.publicRequest?.styleModelId || '');
+    setActiveModelCategoryId(next.publicRequest?.styleModelCategoryId || '');
     setImageFile(null);
     setBusy(!ready(next));
   }
@@ -246,6 +260,23 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
     timer = window.setTimeout(advance, 500);
     return () => { active = false; window.clearTimeout(timer); };
   }, [client, job?.projectId, job?.status, busy]);
+
+  async function selectModelCategory(categoryId: string) {
+    if (!theme || !categoryId) return;
+    const requestId = ++modelLoadRequest.current;
+    setActiveModelCategoryId(categoryId);
+    setStyleModelId('');
+    setArtModels([]);
+    setModelImagesLoading(true);
+    try {
+      const result = await studio(client, { action: 'public_models_list', theme, categoryId }) as PublicArtModelListing;
+      if (requestId === modelLoadRequest.current) setArtModels(result.models || []);
+    } catch {
+      if (requestId === modelLoadRequest.current) setError('Não foi possível carregar as imagens desta categoria.');
+    } finally {
+      if (requestId === modelLoadRequest.current) setModelImagesLoading(false);
+    }
+  }
 
   async function refreshHistory() {
     try {
@@ -320,7 +351,6 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
     setSelectedVersion(null);
     try {
       const form = new FormData();
-      const modelReference = await compressedArtModel(selectedModel);
       const exactText = [printName, phrase].filter(Boolean);
       const titleText = printName || phrase;
       form.set('action', 'start');
@@ -337,12 +367,12 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
         text: exactText.join(' · '),
         kind: printName ? 'name' : 'phrase',
         styleModelId: selectedModel.id,
-        styleModelName: selectedModel.name,
+        styleModelCategory: selectedModelCategory?.name || '',
+        styleModelCategoryId: selectedModel.categoryId,
       }));
-      form.set('artDescription', 'Arte original para caneca. Tema informado: ' + theme + '. Foto pessoal do cliente como referência do assunto. Modelo visual escolhido: ' + selectedModel.name + '. Texto exato na metade esquerda: ' + exactText.join(' · ') + '. Ilustração baseada na foto do cliente na metade direita.');
+      form.set('artDescription', 'Arte original para caneca. Tema informado: ' + theme + '. Foto pessoal do cliente como referência do assunto. Categoria visual escolhida: ' + (selectedModelCategory?.name || '') + '. Texto exato na metade esquerda: ' + exactText.join(' · ') + '. Ilustração baseada na foto do cliente na metade direita.');
       form.set('mandatoryText', exactText.join('\n'));
       form.set('reference', imageFile);
-      form.set('styleReference', modelReference);
       const created = await studio(client, form) as Creation;
       setJob(created);
       setNotice('Criando três estilos de desenho e seus mockups. Esta tela atualiza sozinha.');
@@ -350,7 +380,9 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
       const code = reason instanceof Error ? reason.message : '';
       setError(code === 'openai_provider_secret_unavailable'
         ? 'A geração de arte está temporariamente indisponível. Tente novamente mais tarde.'
-        : 'Não foi possível iniciar a criação. Confira os dados da imagem e tente novamente.');
+        : code.startsWith('style_model_')
+          ? 'Não foi possível carregar a imagem escolhida. Selecione novamente e tente outra vez.'
+          : 'Não foi possível iniciar a criação. Confira os dados da imagem e tente novamente.');
       setBusy(false);
     }
   }
@@ -521,7 +553,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
               <div className="public-theme-options">
                 {themes.map((item) => (
                   <label className={'public-theme-option' + (theme === item ? ' is-selected' : '')} key={item}>
-                    <input type="radio" name="theme" value={item} required checked={theme === item} onChange={() => setTheme(item)} />
+                    <input type="radio" name="theme" value={item} required checked={theme === item} onChange={() => { setTheme(item); setStyleModelId(''); setActiveModelCategoryId(''); }} />
                     <span className="public-theme-symbol" aria-hidden="true">{themeDetails[item].symbol}</span>
                     <span className="public-theme-copy"><strong>{item}</strong><small>{themeDetails[item].description}</small></span>
                     <span className="public-theme-check" aria-hidden="true">✓</span>
@@ -540,20 +572,34 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
 
             <section className="public-style-section" aria-labelledby="art-model-title">
               <div className="public-style-heading">
-                <span className="public-field-title"><span className="public-form-step">3</span> Escolha um modelo de arte</span>
-                <p id="art-model-title">Este exemplo orienta o traço e o acabamento. A IA usa a sua foto como assunto e cria uma arte nova.</p>
+                <span className="public-field-title"><span className="public-form-step">3</span> Escolha uma imagem para inspirar o desenho</span>
+                <p id="art-model-title">As imagens são organizadas por tema e categoria. A escolhida orienta o estilo; a sua foto define quem será ilustrado.</p>
               </div>
-              <div className="public-style-grid">
-                {artModels.map((model) => (
+              {!theme ? <p className="public-model-empty">Escolha Pet, Família ou Amigo para ver as categorias disponíveis.</p> : null}
+              {theme && modelCategoriesLoading ? <p className="public-model-empty">Carregando categorias…</p> : null}
+              {theme && !modelCategoriesLoading && !modelCategories.length
+                ? <p className="public-model-empty">Ainda não há categorias com imagens para este tema.</p> : null}
+              {modelCategories.length ? <div className="public-model-categories" aria-label={'Categorias de ' + theme}>
+                {modelCategories.map((category) => (
+                  <button type="button" className={'public-model-category' + (activeModelCategoryId === category.id ? ' is-active' : '')}
+                    key={category.id} aria-pressed={activeModelCategoryId === category.id}
+                    onClick={() => void selectModelCategory(category.id)}>
+                    <span>{category.name}</span><small>{category.imageCount}</small>
+                  </button>
+                ))}
+              </div> : null}
+              {modelImagesLoading ? <p className="public-model-empty">Carregando imagens…</p> : null}
+              {!modelImagesLoading && artModels.length ? <div className="public-model-carousel" role="radiogroup"
+                aria-label={'Imagens de inspiração: ' + (selectedModelCategory?.name || '')}>
+                {artModels.map((model, index) => (
                   <label className={'public-style-option' + (styleModelId === model.id ? ' is-selected' : '')} key={model.id}>
-                    <input type="radio" name="styleModel" value={model.id} required checked={styleModelId === model.id}
-                      onChange={() => setStyleModelId(model.id)} />
-                    <img src={artModelPreview(model)} alt="" loading="lazy" />
-                    <span><strong>{model.name}</strong><small>{model.description}</small></span>
+                    <input type="radio" name="styleModel" value={model.id} required aria-label={'Imagem de inspiração ' + (index + 1)}
+                      checked={styleModelId === model.id} onChange={() => setStyleModelId(model.id)} />
+                    <img src={model.url} alt={'Imagem de inspiração ' + (index + 1)} loading="lazy" />
                     <b className="public-style-check" aria-hidden="true">✓</b>
                   </label>
                 ))}
-              </div>
+              </div> : null}
             </section>
 
             <div className="public-personal-text">

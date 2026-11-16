@@ -11,7 +11,7 @@ type CustomerCreation = {
   title: string;
   status: string;
   createdAt: string;
-  publicRequest?: { theme?: string; mugName?: string; name?: string; phrase?: string; generatedPhrase?: string; referenceTitle?: string; referenceCategory?: string; styleModelName?: string } | null;
+  publicRequest?: { theme?: string; mugName?: string; name?: string; phrase?: string; generatedPhrase?: string; referenceTitle?: string; referenceCategory?: string; styleModelName?: string; styleModelCategory?: string; styleModelCategoryId?: string } | null;
   artVersions: Asset[];
   mockups: Mockup[];
 };
@@ -38,6 +38,8 @@ type Order = {
     referenceTitle?: string;
     referenceCategory?: string;
     styleModelName?: string;
+    styleModelCategory?: string;
+    styleModelCategoryId?: string;
   } | null;
   artVersions: Asset[];
   mockups: Mockup[];
@@ -55,7 +57,11 @@ type Customer = {
   lastOrderAt: string;
 };
 type CustomerArtworkPage = { creations: CustomerCreation[]; total: number; hasMore: boolean; nextOffset: number };
-type Tab = 'orders' | 'customers';
+type ModelTheme = 'Pet' | 'Família' | 'Amigo';
+type ModelCategory = { id: string; theme: ModelTheme; name: string; createdAt: string; imageCount: number };
+type ModelImage = { id: string; categoryId: string; url: string; createdAt: string };
+type ModelGallery = { categories: ModelCategory[]; models: ModelImage[] };
+type Tab = 'orders' | 'customers' | 'models';
 
 const orderStatuses = [
   ['new', 'Nova'],
@@ -101,6 +107,13 @@ function errorMessage(error: unknown): string {
   if (code === 'admin_auth_required' || code === 'admin_access_required') return 'Não foi possível abrir o painel. Atualize a página e tente novamente.';
   if (code === 'admin_access_unavailable') return 'Não foi possível verificar o acesso ao painel. Tente novamente mais tarde.';
   if (code === 'studio_customer_update_failed') return 'Não foi possível atualizar o cadastro do cliente.';
+  if (code === 'style_model_category_exists') return 'Já existe uma categoria com esse nome para o tema selecionado.';
+  if (code === 'style_model_category_not_empty') return 'Remova primeiro as imagens desta categoria.';
+  if (code === 'style_model_image_too_large') return 'Uma imagem não pôde ser reduzida para o limite de 100 KB.';
+  if (code === 'style_model_source_invalid') return 'Escolha imagens PNG, JPEG ou WebP de até 20 MB cada.';
+  if (code === 'style_model_image_compression_failed') return 'O navegador não conseguiu preparar uma das imagens. Tente outro arquivo.';
+  if (code === 'style_model_category_not_found') return 'A categoria selecionada não está mais disponível.';
+  if (code === 'style_model_catalog_lookup_failed') return 'Não foi possível carregar a galeria de modelos.';
   return 'Não foi possível concluir esta ação. Atualize a página e tente novamente.';
 }
 
@@ -110,9 +123,51 @@ function dateLabel(value: string | null | undefined): string {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString('pt-BR');
 }
 
+const modelThemes: ModelTheme[] = ['Pet', 'Família', 'Amigo'];
+const MODEL_SOURCE_MAX_BYTES = 20 * 1024 * 1024;
+const MODEL_IMAGE_MAX_BYTES = 100_000;
+const MODEL_UPLOAD_BATCH_SIZE = 20;
+
+async function compressModelImage(file: File): Promise<File> {
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) ||
+    file.size <= 0 || file.size > MODEL_SOURCE_MAX_BYTES) {
+    throw new Error('style_model_source_invalid');
+  }
+  const bitmap = await createImageBitmap(file);
+  try {
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('style_model_image_compression_failed');
+    for (const maxEdge of [1600, 1200, 960, 800, 640, 520, 420]) {
+      const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      for (const quality of [0.84, 0.72, 0.60, 0.50, 0.40]) {
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
+        if (blob && blob.size <= MODEL_IMAGE_MAX_BYTES) {
+          return new File([blob], 'modelo.webp', { type: 'image/webp' });
+        }
+      }
+    }
+  } finally {
+    bitmap.close();
+  }
+  throw new Error('style_model_image_too_large');
+}
+
 export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
   const [tab, setTab] = useState<Tab>('orders');
   const [orders, setOrders] = useState<Order[]>([]);
+  const [modelTheme, setModelTheme] = useState<ModelTheme>('Pet');
+  const [modelCategories, setModelCategories] = useState<ModelCategory[]>([]);
+  const [modelCategoryId, setModelCategoryId] = useState('');
+  const [modelCategoryName, setModelCategoryName] = useState('');
+  const [modelImages, setModelImages] = useState<ModelImage[]>([]);
+  const [modelGalleryLoading, setModelGalleryLoading] = useState(false);
+  const [modelUploading, setModelUploading] = useState(false);
+  const [modelUploadProgress, setModelUploadProgress] = useState('');
+  const [modelDeletingId, setModelDeletingId] = useState('');
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customerArtworks, setCustomerArtworks] = useState<Record<string, CustomerArtworkPage>>({});
   const [loadingCustomerEmail, setLoadingCustomerEmail] = useState('');
@@ -124,6 +179,125 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
   const [editingCustomer, setEditingCustomer] = useState<string | null>(null);
   const [customerName, setCustomerName] = useState('');
 
+
+  async function loadModelGallery(categoryId?: string, themeOverride?: ModelTheme) {
+    const selectedTheme = themeOverride || modelTheme;
+    setModelGalleryLoading(true);
+    setError('');
+    try {
+      let result = await invoke<ModelGallery>(client, {
+        action: 'admin_models_list',
+        ...(categoryId ? { categoryId } : {}),
+      });
+      const categories = result.categories || [];
+      setModelCategories(categories);
+      const rememberedCategory = categories.find((category) =>
+        category.id === (categoryId || modelCategoryId) && category.theme === selectedTheme);
+      const nextCategoryId = rememberedCategory?.id ||
+        categories.find((category) => category.theme === selectedTheme)?.id || '';
+      setModelCategoryId(nextCategoryId);
+      if (nextCategoryId && nextCategoryId !== categoryId) {
+        result = await invoke<ModelGallery>(client, { action: 'admin_models_list', categoryId: nextCategoryId });
+        setModelCategories(result.categories || categories);
+      }
+      setModelImages(result.models || []);
+    } catch (reason) {
+      setError(errorMessage(reason));
+      setModelImages([]);
+    } finally {
+      setModelGalleryLoading(false);
+    }
+  }
+
+  async function createModelCategory() {
+    const name = modelCategoryName.trim();
+    if (name.length < 2 || name.length > 60) {
+      setError('Digite um nome de categoria entre 2 e 60 caracteres.');
+      return;
+    }
+    setSaving('model-category');
+    setError('');
+    setNotice('');
+    try {
+      const result = await invoke<{ category: ModelCategory }>(client, {
+        action: 'admin_model_category_create',
+        theme: modelTheme,
+        name,
+      });
+      setModelCategoryName('');
+      await loadModelGallery(result.category.id, modelTheme);
+      setNotice('Categoria criada. Agora selecione as imagens para subir em lote.');
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setSaving('');
+    }
+  }
+
+  async function uploadModelImages(files: FileList | File[] | null) {
+    const selectedFiles = Array.from(files || []);
+    const categoryId = modelCategoryId;
+    if (!selectedFiles.length) return;
+    if (!categoryId) {
+      setError('Crie ou selecione uma categoria antes de enviar as imagens.');
+      return;
+    }
+    setModelUploading(true);
+    setModelUploadProgress('');
+    setError('');
+    setNotice('');
+    let uploadedCount = 0;
+    const batchCount = Math.ceil(selectedFiles.length / MODEL_UPLOAD_BATCH_SIZE);
+    try {
+      for (let offset = 0; offset < selectedFiles.length; offset += MODEL_UPLOAD_BATCH_SIZE) {
+        const batchIndex = Math.floor(offset / MODEL_UPLOAD_BATCH_SIZE) + 1;
+        setModelUploadProgress('Preparando lote ' + batchIndex + ' de ' + batchCount + '…');
+        const form = new FormData();
+        form.set('action', 'admin_model_gallery_upload');
+        form.set('categoryId', categoryId);
+        const batch = selectedFiles.slice(offset, offset + MODEL_UPLOAD_BATCH_SIZE);
+        for (const sourceFile of batch) {
+          form.append('modelImages', await compressModelImage(sourceFile));
+        }
+        setModelUploadProgress('Enviando lote ' + batchIndex + ' de ' + batchCount + '…');
+        const result = await invoke<{ added: number }>(client, form);
+        uploadedCount += result.added || 0;
+      }
+      await loadModelGallery(categoryId, modelTheme);
+      setNotice(uploadedCount + (uploadedCount === 1 ? ' imagem adicionada à galeria.' : ' imagens adicionadas à galeria.'));
+    } catch (reason) {
+      setError(errorMessage(reason));
+      if (uploadedCount) setNotice(uploadedCount + ' imagens foram salvas antes da falha. Você pode enviar o restante novamente.');
+    } finally {
+      setModelUploading(false);
+      setModelUploadProgress('');
+    }
+  }
+
+  async function removeModelImage(image: ModelImage) {
+    if (!window.confirm('Remover esta imagem da galeria?')) return;
+    setModelDeletingId(image.id);
+    setError('');
+    setNotice('');
+    try {
+      await invoke(client, { action: 'admin_model_delete', modelId: image.id });
+      await loadModelGallery(modelCategoryId, modelTheme);
+      setNotice('Imagem removida da galeria.');
+    } catch (reason) { setError(errorMessage(reason)); }
+    finally { setModelDeletingId(''); }
+  }
+
+  async function removeModelCategory(category: ModelCategory) {
+    if (category.imageCount) return;
+    if (!window.confirm('Remover a categoria “' + category.name + '” do tema ' + category.theme + '?')) return;
+    setError('');
+    setNotice('');
+    try {
+      await invoke(client, { action: 'admin_model_category_delete', categoryId: category.id });
+      await loadModelGallery();
+      setNotice('Categoria removida.');
+    } catch (reason) { setError(errorMessage(reason)); }
+  }
 
   async function loadCustomerArtworks(customer: Customer, append = false) {
     const email = customer.email.trim().toLowerCase();
@@ -240,12 +414,16 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
     <section className="storefront-admin">
       <div className="storefront-admin-heading">
         <div><p className="storefront-admin-kicker">LOJA CANECAFÁCIL</p><h1>Atendimento e produção</h1><p>Gerencie criações, clientes, encomendas e impressão.</p></div>
-        <button type="button" className="storefront-admin-refresh" onClick={() => void loadData()} disabled={loading}>Atualizar</button>
+        <button type="button" className="storefront-admin-refresh" onClick={() => { void loadData(); if (tab === 'models') void loadModelGallery(); }} disabled={loading || modelGalleryLoading}>Atualizar</button>
       </div>
 
       <nav className="storefront-admin-tabs" aria-label="Admin CanecaFácil">
         <button type="button" className={tab === 'orders' ? 'is-active' : ''} onClick={() => setTab('orders')}>Solicitações <b>{orders.length}</b></button>
         <button type="button" className={tab === 'customers' ? 'is-active' : ''} onClick={() => setTab('customers')}>Clientes <b>{customers.length}</b></button>
+        <button type="button" className={tab === 'models' ? 'is-active' : ''} onClick={() => {
+          setTab('models');
+          void loadModelGallery();
+        }}>Modelos de arte <b>{modelCategories.reduce((total, category) => total + category.imageCount, 0)}</b></button>
       </nav>
       <p className="storefront-retention-note">As artes ficam em resolução de impressão por 15 dias. Depois, o sistema remove os arquivos automaticamente; o cadastro e as anotações permanecem.</p>
 
@@ -287,7 +465,7 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
                 {requestName ? <strong>Nome: “{requestName}”</strong> : null}
                 {requestPhrase ? <strong>{request.autoPhrase ? 'Frase criada pela IA' : 'Frase'}: “{requestPhrase}”</strong> : null}
                 {!requestName && !requestPhrase ? <strong>Sem nome ou frase personalizada</strong> : null}
-                <small>{request.theme ? 'Tema: ' + request.theme : request.generatedTheme ? 'Tema identificado: ' + request.generatedTheme : 'Arte personalizada'}{request.styleModelName ? ' · Modelo de arte: ' + request.styleModelName : ''}{request.referenceTitle ? ' · Inspiração antiga: ' + request.referenceTitle : ''}</small>
+                <small>{request.theme ? 'Tema: ' + request.theme : request.generatedTheme ? 'Tema identificado: ' + request.generatedTheme : 'Arte personalizada'}{request.styleModelCategory ? ' · Categoria do modelo: ' + request.styleModelCategory : request.styleModelName ? ' · Modelo de arte: ' + request.styleModelName : ''}{request.referenceTitle ? ' · Inspiração antiga: ' + request.referenceTitle : ''}</small>
               </div> : null}
               {art?.url ? <div className="storefront-order-actions">
                 <a className="storefront-admin-button is-secondary" href={art.url} download={'canecafacil-' + order.projectId + '-v' + version + '.webp'}>Baixar arte 2400 × 960</a>
@@ -304,6 +482,70 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
             </div>
           </article>;
         })}
+      </div> : null}
+
+      {!loading && tab === 'models' ? <div className="storefront-model-manager">
+        <header className="storefront-model-manager-heading">
+          <div><p className="storefront-admin-kicker">GALERIA PÚBLICA</p><h2>Modelos para inspirar as artes</h2>
+            <p>Crie categorias por tema e envie várias imagens de uma vez. Cada imagem recebe um identificador automático; não precisa cadastrar nome individual.</p></div>
+        </header>
+
+        <section className="storefront-model-category-tools">
+          <div className="storefront-model-category-form">
+            <label>Tema da categoria<select value={modelTheme} disabled={modelUploading} onChange={(event) => {
+              const nextTheme = event.target.value as ModelTheme;
+              setModelTheme(nextTheme);
+              setModelCategoryId('');
+              setModelImages([]);
+              void loadModelGallery(undefined, nextTheme);
+            }}>{modelThemes.map((themeName) => <option key={themeName} value={themeName}>{themeName}</option>)}</select></label>
+            <label>Nova categoria<input value={modelCategoryName} maxLength={60} onChange={(event) => setModelCategoryName(event.target.value)}
+              placeholder={modelTheme === 'Pet' ? 'Ex.: Cães, gatos, aves' : modelTheme === 'Família' ? 'Ex.: Mãe, pai, avós' : 'Ex.: Melhores amigos'} /></label>
+            <button type="button" className="storefront-admin-button" onClick={() => void createModelCategory()}
+              disabled={saving === 'model-category' || modelUploading || modelCategoryName.trim().length < 2}>
+              {saving === 'model-category' ? 'Criando…' : 'Criar categoria'}
+            </button>
+          </div>
+          <div className="storefront-model-upload">
+            <label>Categoria para as imagens<select value={modelCategoryId} disabled={modelUploading} onChange={(event) => {
+              const nextId = event.target.value;
+              setModelCategoryId(nextId);
+              void loadModelGallery(nextId, modelTheme);
+            }}>
+              <option value="">Selecione uma categoria</option>
+              {modelCategories.filter((category) => category.theme === modelTheme).map((category) =>
+                <option key={category.id} value={category.id}>{category.name} ({category.imageCount})</option>)}
+            </select></label>
+            <label className="storefront-model-file">
+              <span>{modelUploading ? modelUploadProgress || 'Enviando…' : 'Selecionar imagens de modelo'}</span>
+              <input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={!modelCategoryId || modelUploading}
+                onChange={(event) => {
+                  const files = Array.from(event.currentTarget.files || []);
+                  event.currentTarget.value = '';
+                  void uploadModelImages(files);
+                }} />
+            </label>
+            <small>PNG, JPEG ou WebP · até 20 MB por arquivo. O sistema converte para WebP com até 100 KB e gera os nomes automaticamente.</small>
+          </div>
+        </section>
+
+        {modelGalleryLoading ? <p className="storefront-admin-empty">Carregando modelos…</p> : null}
+        {!modelGalleryLoading && modelCategoryId && !modelImages.length
+          ? <div className="storefront-admin-empty"><strong>Esta categoria ainda está vazia.</strong><span>Selecione imagens acima para preencher o carrossel público.</span></div> : null}
+        {!modelGalleryLoading && !modelCategories.some((category) => category.theme === modelTheme)
+          ? <div className="storefront-admin-empty"><strong>O tema ainda não tem categorias.</strong><span>Crie uma categoria para poder enviar imagens.</span></div> : null}
+        {modelImages.length ? <div className="storefront-model-grid">
+          {modelImages.map((image) => <article className="storefront-model-card" key={image.id}>
+            <img src={image.url} alt={'Imagem de modelo da categoria ' + (modelCategories.find((category) => category.id === image.categoryId)?.name || '')} loading="lazy" />
+            <button type="button" aria-label="Remover imagem de modelo" disabled={modelDeletingId === image.id || modelUploading}
+              onClick={() => void removeModelImage(image)}>{modelDeletingId === image.id ? 'Removendo…' : 'Remover imagem'}</button>
+          </article>)}
+        </div> : null}
+        {modelCategories.filter((category) => category.theme === modelTheme && category.imageCount === 0).length
+          ? <div className="storefront-model-empty-categories"><strong>Categorias vazias</strong>
+            {modelCategories.filter((category) => category.theme === modelTheme && category.imageCount === 0).map((category) =>
+              <button type="button" key={category.id} onClick={() => void removeModelCategory(category)}>Remover {category.name}</button>)}
+          </div> : null}
       </div> : null}
 
       {!loading && tab === 'customers' ? <div className="storefront-customer-list">

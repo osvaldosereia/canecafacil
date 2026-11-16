@@ -10,14 +10,12 @@ const ART_SIZE = "2400x960";
 const ARTWORK_RETENTION_DAYS = 15;
 const ARTWORK_RETENTION_MS = ARTWORK_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const SIGNED_URL_TTL = 900;
+const STYLE_MODEL_URL_TTL = 3600;
+const MODEL_CATALOG_PATH = "style-models/catalog.json";
+const MAX_STYLE_MODEL_IMAGE_BYTES = 100_000;
+const MAX_STYLE_MODEL_BATCH = 20;
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 const PUBLIC_VARIANT_COUNT = 3;
-const PUBLIC_ART_MODELS = [
-  { id: "aquarela", label: "Aquarela suave", direction: "soft watercolor washes, subtle paper grain and delicate hand-painted contours" },
-  { id: "cartoon", label: "Cartoon delicado", direction: "clean rounded outlines, expressive simplified shapes and balanced cel shading" },
-  { id: "lapis-colorido", label: "Lápis de cor", direction: "visible layered colored-pencil strokes, tactile paper grain and fine hand-drawn hatching" },
-  { id: "guache", label: "Guache contemporânea", direction: "opaque matte pigments, layered shapes, restrained colors and soft editorial edges" },
-] as const;
 const PUBLIC_ART_STYLES = [
   { label: "Aquarela delicada", direction: "A hand-painted watercolor storybook illustration, soft transparent washes, subtle paper texture, elegant organic contours and gentle luminous color." },
   { label: "Cartoon de traço limpo", direction: "A polished original clean-line cartoon illustration, expressive confident outlines, simplified readable shapes, balanced cel shading and cheerful editorial character design." },
@@ -95,6 +93,8 @@ type StudioInput = {
     referenceCategory?: string;
     styleModelId?: string;
     styleModelName?: string;
+    styleModelCategory?: string;
+    styleModelCategoryId?: string;
   } | null;
   styleReferencePath?: string | null;
   styleReferenceDeletedAt?: string | null;
@@ -441,11 +441,14 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
         const name = typeof value.name === "string" ? value.name.trim() : mugName;
         const phrase = typeof value.phrase === "string" ? value.phrase.trim() : "";
         const modelId = typeof value.styleModelId === "string" ? value.styleModelId.trim() : "";
-        const model = PUBLIC_ART_MODELS.find((item) => item.id === modelId);
+        const modelCategory = typeof value.styleModelCategory === "string" ? value.styleModelCategory.trim() : "";
+        const modelCategoryId = typeof value.styleModelCategoryId === "string" ? value.styleModelCategoryId.trim() : "";
         if ((value.name !== undefined && typeof value.name !== "string") ||
           (value.phrase !== undefined && typeof value.phrase !== "string") ||
           (value.mugName !== undefined && typeof value.mugName !== "string") ||
-          (value.styleModelId !== undefined && !model) ||
+          (value.styleModelCategory !== undefined && typeof value.styleModelCategory !== "string") ||
+          !/^[a-f0-9-]{36}$/i.test(modelCategoryId) ||
+          !/^[a-f0-9-]{36}$/i.test(modelId) || modelCategory.length > 80 ||
           !["Pet", "Família", "Amigo"].includes(theme) || (!name && !phrase) ||
           name.length > 80 || phrase.length > 120) {
           throw new Error("invalid_studio_input");
@@ -457,8 +460,9 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
           phrase: phrase || undefined,
           text: [name, phrase].filter(Boolean).join(" · "),
           kind: name ? "name" : "phrase",
-          styleModelId: model?.id,
-          styleModelName: model?.label,
+          styleModelId: modelId,
+          styleModelCategory: modelCategory || undefined,
+          styleModelCategoryId: modelCategoryId || undefined,
         };
       } else {
         const text = typeof value.text === "string" ? value.text.trim() : "";
@@ -487,7 +491,6 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
       throw new Error("invalid_studio_input");
     }
   }
-  if (publicRequest?.styleModelId && !styleReference) throw new Error("invalid_studio_input");
   if (styleReference && !publicRequest?.styleModelId) throw new Error("invalid_studio_input");
 
   return {
@@ -622,16 +625,14 @@ function makePublicArtPrompt(input: StudioInput, variantIndex: number): string {
   const phrase = request?.phrase || "";
   const exactText = [name, phrase].filter(Boolean);
   const style = PUBLIC_ART_STYLES[Math.max(0, Math.min(PUBLIC_VARIANT_COUNT - 1, variantIndex - 1))];
-  const model = PUBLIC_ART_MODELS.find((item) => item.id === request?.styleModelId);
-  if (!request?.theme || !exactText.length) throw new Error("invalid_studio_input");
+  const modelCategory = request?.styleModelCategory || "";
+  if (!request?.theme || !exactText.length || !request.styleModelId) throw new Error("invalid_studio_input");
   const lines = [
     "You are an expert professional illustrator who creates original, print-ready mug artwork.",
     "Image 1 is the customer's uploaded personal photo. Analyze its subject, recognizable features, pose, mood, and relevant context. Use this photo as the source of the person or pet being illustrated.",
     "Draw a newly composed illustration based on the customer's photo. Do not paste the photo into the result, trace it, recreate its pixels, or copy its exact composition. The result must clearly look like an original drawing, not a photograph.",
-    model
-      ? "Image 2 is the art-model image selected by the customer. Use it only as a visual guide for illustration technique, line character, texture, color treatment, and overall finish. Ignore its person, animal, objects, identity, pose, and layout; do not reproduce or imitate its exact composition."
-      : "If a second art-model image is supplied, use it only for the general drawing technique and finish, never for its subject or layout.",
-    model ? "Selected visual model: " + model.label + " — " + model.direction + "." : "",
+    "Image 2 is the artwork model selected by the customer. Use this image only as a visual reference for drawing technique, line character, texture, color treatment, and finish. Keep the subject from image 1. Do not copy the model image's person, animal, objects, identity, pose, or composition.",
+    modelCategory ? "Artwork model category: " + modelCategory + ". Treat this as context only, not text to include in the design." : "",
     "Gift theme selected by the customer: " + request.theme + ". Let this theme guide the mood and only add supporting details that fit the customer's photo.",
     "Distinct drawing strategy for this variation: " + style.direction,
     "Create only a flat horizontal 2D print design, exactly " + ART_SIZE + " pixels. Do not draw a mug, mockup, hands, table, room, or product scene.",
@@ -915,6 +916,96 @@ async function uploadPrivate(
     upsert: false,
   });
   if (error) throw new Error("studio_asset_upload_failed");
+}
+
+type StyleModelTheme = "Pet" | "Família" | "Amigo";
+type StyleModelCategory = { id: string; theme: StyleModelTheme; name: string; createdAt: string };
+type StyleModelAsset = { id: string; categoryId: string; path: string; createdAt: string };
+type StyleModelCatalog = { version: 1; categories: StyleModelCategory[]; models: StyleModelAsset[] };
+
+function validStyleModelId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9-]{36}$/i.test(value);
+}
+
+function validStyleModelTheme(value: unknown): value is StyleModelTheme {
+  return value === "Pet" || value === "Família" || value === "Amigo";
+}
+
+function isNotFoundStorageError(message: string): boolean {
+  return /not found|does not exist|404/i.test(message);
+}
+
+async function readStyleModelCatalog(adminClient: AdminClient): Promise<StyleModelCatalog> {
+  const { data, error } = await adminClient.storage.from(BUCKET).download(MODEL_CATALOG_PATH);
+  if (error || !data) {
+    if (error && isNotFoundStorageError(error.message)) return { version: 1, categories: [], models: [] };
+    throw new Error("style_model_catalog_lookup_failed");
+  }
+  let value: unknown;
+  try { value = JSON.parse(await data.text()); } catch { throw new Error("style_model_catalog_invalid"); }
+  if (!value || typeof value !== "object") throw new Error("style_model_catalog_invalid");
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.categories) || !Array.isArray(record.models)) {
+    throw new Error("style_model_catalog_invalid");
+  }
+  const categories = record.categories.filter((item): item is StyleModelCategory => {
+    if (!item || typeof item !== "object") return false;
+    const category = item as Record<string, unknown>;
+    return validStyleModelId(category.id) && validStyleModelTheme(category.theme) &&
+      typeof category.name === "string" && category.name.trim().length > 0 &&
+      typeof category.createdAt === "string";
+  });
+  const categoryIds = new Set(categories.map((category) => category.id));
+  const models = record.models.filter((item): item is StyleModelAsset => {
+    if (!item || typeof item !== "object") return false;
+    const model = item as Record<string, unknown>;
+    return validStyleModelId(model.id) && typeof model.categoryId === "string" &&
+      categoryIds.has(model.categoryId) && typeof model.path === "string" &&
+      model.path === "style-models/" + model.id + ".webp" && typeof model.createdAt === "string";
+  });
+  return { version: 1, categories, models };
+}
+
+async function writeStyleModelCatalog(adminClient: AdminClient, catalog: StyleModelCatalog): Promise<void> {
+  const blob = new Blob([JSON.stringify(catalog)], { type: "application/json" });
+  const { error } = await adminClient.storage.from(BUCKET).upload(MODEL_CATALOG_PATH, blob, {
+    contentType: "application/json",
+    upsert: true,
+  });
+  if (error) throw new Error("style_model_catalog_save_failed");
+}
+
+async function styleModelListing(
+  adminClient: AdminClient,
+  projectUrl: string,
+  options: { theme?: StyleModelTheme; categoryId?: string; includeEmptyCategories: boolean },
+): Promise<{ categories: Array<StyleModelCategory & { imageCount: number }>; models: Array<{ id: string; categoryId: string; url: string; createdAt: string }> }> {
+  const catalog = await readStyleModelCatalog(adminClient);
+  const themeCategories = catalog.categories.filter((category) => !options.theme || category.theme === options.theme);
+  const categoriesWithCounts = themeCategories.map((category) => ({
+    ...category,
+    imageCount: catalog.models.filter((model) => model.categoryId === category.id).length,
+  }));
+  const visibleCategories = categoriesWithCounts.filter((category) =>
+    options.includeEmptyCategories || category.imageCount > 0);
+  const categoryIds = new Set(visibleCategories.map((category) => category.id));
+  const selectedCategoryId = options.categoryId;
+  if (selectedCategoryId && !categoryIds.has(selectedCategoryId)) throw new Error("style_model_category_not_found");
+  const assets = selectedCategoryId
+    ? catalog.models.filter((model) => model.categoryId === selectedCategoryId)
+    : [];
+  const models = await Promise.all(assets.map(async (model) => {
+    const { data, error } = await adminClient.storage.from(BUCKET)
+      .createSignedUrl(model.path, STYLE_MODEL_URL_TTL);
+    if (error || !data?.signedUrl) throw new Error("style_model_image_lookup_failed");
+    return {
+      id: model.id,
+      categoryId: model.categoryId,
+      url: normalizeSignedUrl(projectUrl, data.signedUrl),
+      createdAt: model.createdAt,
+    };
+  }));
+  return { categories: visibleCategories, models };
 }
 
 async function writeJob(
@@ -1262,7 +1353,34 @@ async function startJob(
   sessionId: string,
   form: FormData,
 ): Promise<Response> {
-  const { input, reference, styleReference } = await parseInput(form);
+  const parsed = await parseInput(form);
+  const { input, reference } = parsed;
+  let styleReference = parsed.styleReference;
+  const publicRequest = input.publicRequest;
+  if (publicRequest?.styleModelId) {
+    try {
+      const catalog = await readStyleModelCatalog(adminClient);
+      const model = catalog.models.find((item) => item.id === publicRequest.styleModelId);
+      const category = model ? catalog.categories.find((item) => item.id === model.categoryId) : undefined;
+      if (!model || !category || category.theme !== publicRequest.theme ||
+        category.id !== publicRequest.styleModelCategoryId) {
+        return json({ error: "style_model_not_found" }, 404);
+      }
+      const modelBytes = await downloadPrivate(adminClient, model.path);
+      if (detectImageMime(modelBytes) !== "image/webp") throw new Error("style_model_image_invalid");
+      publicRequest.styleModelCategory = category.name;
+      styleReference = {
+        bytes: modelBytes,
+        fileName: "selected-art-model.webp",
+        mimeType: "image/webp",
+      };
+    } catch {
+      return json({ error: "style_model_catalog_lookup_failed" }, 503);
+    }
+  }
+  if (publicRequest?.theme && !styleReference) {
+    return json({ error: "style_model_not_found" }, 404);
+  }
   if (input.publicRequest) {
     let customerName = "";
     let customerEmail = "";
@@ -1812,6 +1930,112 @@ async function handleAdminAction(
   const denied = await authorizeAdminRequest(request, adminClient);
   if (denied) return denied;
 
+  if (action === "admin_models_list") {
+    try {
+      const categoryId = typeof body.categoryId === "string" ? body.categoryId : undefined;
+      if (categoryId && !validStyleModelId(categoryId)) return json({ error: "invalid_studio_input" }, 400);
+      return json(await styleModelListing(adminClient, url, { includeEmptyCategories: true, categoryId }));
+    } catch {
+      return json({ error: "style_model_catalog_lookup_failed" }, 500);
+    }
+  }
+
+  if (action === "admin_model_category_create") {
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const theme = body.theme;
+    if (!validStyleModelTheme(theme) || name.length < 2 || name.length > 60) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    try {
+      const catalog = await readStyleModelCatalog(adminClient);
+      if (catalog.categories.some((category) => category.theme === theme &&
+        category.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+        return json({ error: "style_model_category_exists" }, 409);
+      }
+      const category: StyleModelCategory = { id: crypto.randomUUID(), theme, name, createdAt: new Date().toISOString() };
+      catalog.categories.push(category);
+      await writeStyleModelCatalog(adminClient, catalog);
+      return json({ category });
+    } catch {
+      return json({ error: "style_model_catalog_save_failed" }, 500);
+    }
+  }
+
+  if (action === "admin_model_category_delete") {
+    const categoryId = typeof body.categoryId === "string" ? body.categoryId : "";
+    if (!validStyleModelId(categoryId)) return json({ error: "invalid_studio_input" }, 400);
+    try {
+      const catalog = await readStyleModelCatalog(adminClient);
+      if (catalog.models.some((model) => model.categoryId === categoryId)) {
+        return json({ error: "style_model_category_not_empty" }, 409);
+      }
+      const categories = catalog.categories.filter((category) => category.id !== categoryId);
+      if (categories.length === catalog.categories.length) return json({ error: "style_model_category_not_found" }, 404);
+      catalog.categories = categories;
+      await writeStyleModelCatalog(adminClient, catalog);
+      return json({ deleted: true });
+    } catch {
+      return json({ error: "style_model_catalog_save_failed" }, 500);
+    }
+  }
+
+  if (action === "admin_model_gallery_upload") {
+    if (!form) return json({ error: "invalid_studio_input" }, 400);
+    const categoryEntry = form.get("categoryId");
+    const categoryId = typeof categoryEntry === "string" ? categoryEntry.trim() : "";
+    const files = form.getAll("modelImages");
+    if (!validStyleModelId(categoryId) || files.length < 1 || files.length > MAX_STYLE_MODEL_BATCH) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    const uploadedPaths: string[] = [];
+    try {
+      const catalog = await readStyleModelCatalog(adminClient);
+      if (!catalog.categories.some((category) => category.id === categoryId)) {
+        return json({ error: "style_model_category_not_found" }, 404);
+      }
+      const added: StyleModelAsset[] = [];
+      for (const file of files) {
+        if (!(file instanceof File) || file.size <= 0 || file.size > MAX_STYLE_MODEL_IMAGE_BYTES ||
+          file.type !== "image/webp") throw new Error("invalid_studio_input");
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        if (detectImageMime(bytes) !== "image/webp") throw new Error("invalid_studio_input");
+        const id = crypto.randomUUID();
+        const path = "style-models/" + id + ".webp";
+        const { error } = await adminClient.storage.from(BUCKET).upload(path, bytes, {
+          contentType: "image/webp",
+          upsert: false,
+        });
+        if (error) throw new Error("style_model_image_upload_failed");
+        uploadedPaths.push(path);
+        added.push({ id, categoryId, path, createdAt: new Date().toISOString() });
+      }
+      catalog.models.push(...added);
+      await writeStyleModelCatalog(adminClient, catalog);
+      return json({ added: added.length });
+    } catch (error) {
+      if (uploadedPaths.length) await adminClient.storage.from(BUCKET).remove(uploadedPaths);
+      const code = error instanceof Error ? error.message : "";
+      if (code === "invalid_studio_input") return json({ error: code }, 400);
+      return json({ error: "style_model_image_upload_failed" }, 500);
+    }
+  }
+
+  if (action === "admin_model_delete") {
+    const modelId = typeof body.modelId === "string" ? body.modelId : "";
+    if (!validStyleModelId(modelId)) return json({ error: "invalid_studio_input" }, 400);
+    try {
+      const catalog = await readStyleModelCatalog(adminClient);
+      const model = catalog.models.find((item) => item.id === modelId);
+      if (!model) return json({ error: "style_model_not_found" }, 404);
+      catalog.models = catalog.models.filter((item) => item.id !== modelId);
+      await writeStyleModelCatalog(adminClient, catalog);
+      await adminClient.storage.from(BUCKET).remove([model.path]);
+      return json({ deleted: true });
+    } catch {
+      return json({ error: "style_model_delete_failed" }, 500);
+    }
+  }
+
   if (action === "admin_users_list") {
     const { data, error } = await adminClient.from("admin_users")
       .select("user_id,role,is_active,display_name,email,created_at,last_login_at")
@@ -2156,6 +2380,19 @@ async function handlePublicAction(
   adminClient: AdminClient,
   url: string,
 ): Promise<Response> {
+
+  if (action === "public_models_list") {
+    const theme = validStyleModelTheme(body.theme) ? body.theme : undefined;
+    const categoryId = typeof body.categoryId === "string" ? body.categoryId : undefined;
+    if (!theme || (categoryId && !validStyleModelId(categoryId))) {
+      return json({ error: "invalid_studio_input" }, 400);
+    }
+    try {
+      return json(await styleModelListing(adminClient, url, { theme, categoryId, includeEmptyCategories: false }));
+    } catch {
+      return json({ error: "style_model_catalog_lookup_failed" }, 500);
+    }
+  }
 
   if (action === "latest") {
     const { data, error } = await adminClient.from(TABLE).select("*")
