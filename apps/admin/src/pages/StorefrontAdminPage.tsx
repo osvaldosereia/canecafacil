@@ -11,7 +11,7 @@ type CustomerCreation = {
   title: string;
   status: string;
   createdAt: string;
-  publicRequest?: { theme?: string; mugName?: string; name?: string; phrase?: string; generatedPhrase?: string; referenceTitle?: string; referenceCategory?: string } | null;
+  publicRequest?: { theme?: string; mugName?: string; name?: string; phrase?: string; generatedPhrase?: string; referenceTitle?: string; referenceCategory?: string; styleModelName?: string } | null;
   artVersions: Asset[];
   mockups: Mockup[];
 };
@@ -37,6 +37,7 @@ type Order = {
     generatedTheme?: string;
     referenceTitle?: string;
     referenceCategory?: string;
+    styleModelName?: string;
   } | null;
   artVersions: Asset[];
   mockups: Mockup[];
@@ -286,7 +287,7 @@ export function StorefrontAdminPage({ client }: { client: SupabaseClient }) {
                 {requestName ? <strong>Nome: “{requestName}”</strong> : null}
                 {requestPhrase ? <strong>{request.autoPhrase ? 'Frase criada pela IA' : 'Frase'}: “{requestPhrase}”</strong> : null}
                 {!requestName && !requestPhrase ? <strong>Sem nome ou frase personalizada</strong> : null}
-                <small>{request.theme ? 'Tema: ' + request.theme : request.generatedTheme ? 'Tema identificado: ' + request.generatedTheme : 'Arte personalizada'}{request.referenceTitle ? ' · Inspiração antiga: ' + request.referenceTitle : ''}</small>
+                <small>{request.theme ? 'Tema: ' + request.theme : request.generatedTheme ? 'Tema identificado: ' + request.generatedTheme : 'Arte personalizada'}{request.styleModelName ? ' · Modelo de arte: ' + request.styleModelName : ''}{request.referenceTitle ? ' · Inspiração antiga: ' + request.referenceTitle : ''}</small>
               </div> : null}
               {art?.url ? <div className="storefront-order-actions">
                 <a className="storefront-admin-button is-secondary" href={art.url} download={'canecafacil-' + order.projectId + '-v' + version + '.webp'}>Baixar arte 2400 × 960</a>
