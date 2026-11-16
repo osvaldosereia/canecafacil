@@ -346,7 +346,7 @@ export function PublicCreatePage({ client }: { client: SupabaseClient }) {
         <>
           <section className="public-hero" id="top">
             <div className="public-hero-copy">
-              <p className="public-kicker">UM PRESENTE COM A SUA HISTÓRIA</p>
+              <p className="public-kicker">SUA IDEIA, SUA CANECA</p>
               <h1>Sua foto vira<br /><em>uma lembrança única.</em></h1>
               <p>Crie uma caneca com o nome de alguém especial e uma ilustração original inspirada na sua foto. Compare três estilos antes de escolher.</p>
               <div className="public-hero-actions">
