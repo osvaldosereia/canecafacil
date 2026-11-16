@@ -12,6 +12,12 @@ const ARTWORK_RETENTION_MS = ARTWORK_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const SIGNED_URL_TTL = 900;
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 const PUBLIC_VARIANT_COUNT = 3;
+const PUBLIC_ART_MODELS = [
+  { id: "aquarela", label: "Aquarela suave", direction: "soft watercolor washes, subtle paper grain and delicate hand-painted contours" },
+  { id: "cartoon", label: "Cartoon delicado", direction: "clean rounded outlines, expressive simplified shapes and balanced cel shading" },
+  { id: "lapis-colorido", label: "Lápis de cor", direction: "visible layered colored-pencil strokes, tactile paper grain and fine hand-drawn hatching" },
+  { id: "guache", label: "Guache contemporânea", direction: "opaque matte pigments, layered shapes, restrained colors and soft editorial edges" },
+] as const;
 const PUBLIC_ART_STYLES = [
   { label: "Aquarela delicada", direction: "A hand-painted watercolor storybook illustration, soft transparent washes, subtle paper texture, elegant organic contours and gentle luminous color." },
   { label: "Cartoon de traço limpo", direction: "A polished original clean-line cartoon illustration, expressive confident outlines, simplified readable shapes, balanced cel shading and cheerful editorial character design." },
@@ -87,7 +93,11 @@ type StudioInput = {
     referenceId?: string;
     referenceTitle?: string;
     referenceCategory?: string;
+    styleModelId?: string;
+    styleModelName?: string;
   } | null;
+  styleReferencePath?: string | null;
+  styleReferenceDeletedAt?: string | null;
   publicGeneration?: { phase: "art" | "mockup"; variantIndex: number } | null;
   customerSavedVersion?: number | null;
   customerSavedAt?: string | null;
@@ -379,7 +389,7 @@ async function readUploadedImage(
   return { bytes, fileName: value.name || name + "." + safeExtension(mimeType), mimeType };
 }
 
-async function parseInput(form: FormData): Promise<{ input: StudioInput; reference: ReferenceImage | null }> {
+async function parseInput(form: FormData): Promise<{ input: StudioInput; reference: ReferenceImage | null; styleReference: ReferenceImage | null }> {
   const creationMode = readText(form, "creationMode", 20, true);
   // Accept the previous Pages form during its rolling deployment; the new UI sends only artDescription.
   const legacyMainTheme = readText(form, "mainTheme", 500);
@@ -394,14 +404,25 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
   let reference: ReferenceImage | null = null;
   if (fileEntry !== null && fileEntry !== "") {
     if (!(fileEntry instanceof File)) throw new Error("invalid_studio_input");
-    if (
-      fileEntry.size <= 0 ||
-      fileEntry.size > MAX_REFERENCE_BYTES ||
-      !["image/png", "image/jpeg", "image/webp"].includes(fileEntry.type)
-    ) throw new Error("invalid_studio_input");
+    if (fileEntry.size <= 0 || fileEntry.size > MAX_REFERENCE_BYTES ||
+      !["image/png", "image/jpeg", "image/webp"].includes(fileEntry.type)) {
+      throw new Error("invalid_studio_input");
+    }
     const bytes = new Uint8Array(await fileEntry.arrayBuffer());
     if (detectImageMime(bytes) !== fileEntry.type) throw new Error("invalid_studio_input");
-    reference = { bytes, fileName: fileEntry.name || "reference-image", mimeType: fileEntry.type };
+    reference = { bytes, fileName: fileEntry.name || "customer-photo", mimeType: fileEntry.type };
+  }
+
+  const styleEntry = form.get("styleReference");
+  let styleReference: ReferenceImage | null = null;
+  if (styleEntry !== null && styleEntry !== "") {
+    if (!(styleEntry instanceof File) || styleEntry.size <= 0 || styleEntry.size > 100_000 ||
+      !["image/png", "image/jpeg", "image/webp"].includes(styleEntry.type)) {
+      throw new Error("invalid_studio_input");
+    }
+    const bytes = new Uint8Array(await styleEntry.arrayBuffer());
+    if (detectImageMime(bytes) !== styleEntry.type) throw new Error("invalid_studio_input");
+    styleReference = { bytes, fileName: styleEntry.name || "art-style-model", mimeType: styleEntry.type };
   }
 
   if ((creationMode === "reference") !== Boolean(reference)) throw new Error("invalid_studio_input");
@@ -413,14 +434,32 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
   if (publicRequestText) {
     try {
       const value = JSON.parse(publicRequestText) as Record<string, unknown>;
-      const isNewFormat = value.theme !== undefined || value.mugName !== undefined;
+      const isNewFormat = value.theme !== undefined || value.mugName !== undefined || value.styleModelId !== undefined;
       if (isNewFormat) {
         const theme = typeof value.theme === "string" ? value.theme.trim() : "";
         const mugName = typeof value.mugName === "string" ? value.mugName.trim() : "";
-        if (!["Pet", "Família", "Amigo"].includes(theme) || !mugName || mugName.length > 80) {
+        const name = typeof value.name === "string" ? value.name.trim() : mugName;
+        const phrase = typeof value.phrase === "string" ? value.phrase.trim() : "";
+        const modelId = typeof value.styleModelId === "string" ? value.styleModelId.trim() : "";
+        const model = PUBLIC_ART_MODELS.find((item) => item.id === modelId);
+        if ((value.name !== undefined && typeof value.name !== "string") ||
+          (value.phrase !== undefined && typeof value.phrase !== "string") ||
+          (value.mugName !== undefined && typeof value.mugName !== "string") ||
+          (value.styleModelId !== undefined && !model) ||
+          !["Pet", "Família", "Amigo"].includes(theme) || (!name && !phrase) ||
+          name.length > 80 || phrase.length > 120) {
           throw new Error("invalid_studio_input");
         }
-        publicRequest = { theme, mugName, name: mugName, text: mugName, kind: "name" };
+        publicRequest = {
+          theme,
+          mugName: name || undefined,
+          name: name || undefined,
+          phrase: phrase || undefined,
+          text: [name, phrase].filter(Boolean).join(" · "),
+          kind: name ? "name" : "phrase",
+          styleModelId: model?.id,
+          styleModelName: model?.label,
+        };
       } else {
         const text = typeof value.text === "string" ? value.text.trim() : "";
         const name = typeof value.name === "string" ? value.name.trim() : "";
@@ -448,6 +487,9 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
       throw new Error("invalid_studio_input");
     }
   }
+  if (publicRequest?.styleModelId && !styleReference) throw new Error("invalid_studio_input");
+  if (styleReference && !publicRequest?.styleModelId) throw new Error("invalid_studio_input");
+
   return {
     input: {
       title,
@@ -468,18 +510,8 @@ async function parseInput(form: FormData): Promise<{ input: StudioInput; referen
       compositionNotes: readText(form, "compositionNotes", 1000),
     },
     reference,
+    styleReference,
   };
-}
-
-function serviceClients(): { url: string; adminClient: AdminClient } {
-  const url = Deno.env.get("SUPABASE_URL")?.trim() || "";
-  const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")?.trim() || "";
-  if (!url || !serviceRole) throw new Error("studio_access_unavailable");
-
-  const adminClient = createClient<any, "public">(url, serviceRole, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  return { url, adminClient };
 }
 
 async function resolveOpenAiKey(adminClient: AdminClient): Promise<string> {
@@ -586,23 +618,37 @@ function makeArtPrompt(input: StudioInput): string {
 
 function makePublicArtPrompt(input: StudioInput, variantIndex: number): string {
   const request = input.publicRequest;
-  if (!request?.theme || !request.mugName) throw new Error("invalid_studio_input");
+  const name = request?.name || request?.mugName || "";
+  const phrase = request?.phrase || "";
+  const exactText = [name, phrase].filter(Boolean);
   const style = PUBLIC_ART_STYLES[Math.max(0, Math.min(PUBLIC_VARIANT_COUNT - 1, variantIndex - 1))];
-  return [
+  const model = PUBLIC_ART_MODELS.find((item) => item.id === request?.styleModelId);
+  if (!request?.theme || !exactText.length) throw new Error("invalid_studio_input");
+  const lines = [
     "You are an expert professional illustrator who creates original, print-ready mug artwork.",
-    "Carefully analyze the uploaded photograph: identify its main subject, recognizable traits, pose, mood, and relevant context. Use that analysis as inspiration to draw a new illustration. Do not use the exact photo, paste it into the result, trace it, or recreate its pixels or exact composition.",
-    "Create a clearly illustrated, newly composed interpretation that still feels connected to the subject in the photo. This must look like a drawing, not a photograph.",
-    "Gift theme selected by the customer: " + request.theme + ". Let this theme guide the mood and small supporting details without adding unrelated subjects.",
-    "Distinct illustration strategy for this option: " + style.direction,
+    "Image 1 is the customer's uploaded personal photo. Analyze its subject, recognizable features, pose, mood, and relevant context. Use this photo as the source of the person or pet being illustrated.",
+    "Draw a newly composed illustration based on the customer's photo. Do not paste the photo into the result, trace it, recreate its pixels, or copy its exact composition. The result must clearly look like an original drawing, not a photograph.",
+    model
+      ? "Image 2 is the art-model image selected by the customer. Use it only as a visual guide for illustration technique, line character, texture, color treatment, and overall finish. Ignore its person, animal, objects, identity, pose, and layout; do not reproduce or imitate its exact composition."
+      : "If a second art-model image is supplied, use it only for the general drawing technique and finish, never for its subject or layout.",
+    model ? "Selected visual model: " + model.label + " — " + model.direction + "." : "",
+    "Gift theme selected by the customer: " + request.theme + ". Let this theme guide the mood and only add supporting details that fit the customer's photo.",
+    "Distinct drawing strategy for this variation: " + style.direction,
     "Create only a flat horizontal 2D print design, exactly " + ART_SIZE + " pixels. Do not draw a mug, mockup, hands, table, room, or product scene.",
-    "The canvas is split exactly in the middle at x=1200. The LEFT half (x=0–1199) is reserved for the customer's name. The RIGHT half (x=1200–2399) contains the original illustration based on the photograph.",
-    "Write this exact name, preserving spelling and accents: " + JSON.stringify(request.mugName) + ". Place it centered in the LEFT half, with typography that suits the illustration style. Do not put this name on the right half. Add no other words, letters, dates, captions, or decorative lettering.",
-    "Center the name composition inside its own left 1200 x 960 panel. Center the full illustration inside its own right 1200 x 960 panel. Each composition should occupy about 80% of its panel area, remain separate, and never cross the center split.",
-    "Use a clean pure-white background. Keep about 5% clear margin around each panel, especially all four corners. No part of the name or important subject may be cropped by the canvas or end abruptly at either outer edge; let minor decorative strokes taper naturally into white.",
-    "The three options must use visibly different drawing techniques. Do not make a contact sheet or combine multiple styles in one output.",
-    "Do not reproduce any signature, artist name, watermark, logo, brand, copyright notice, website name, URL, social handle, QR code, or source attribution visible in the photograph. Omit those marks completely.",
+    "The canvas is split exactly in the middle at x=1200. The LEFT half (x=0–1199) is reserved for the customer's exact name and/or phrase. The RIGHT half (x=1200–2399) contains the original illustration based on the customer's photo.",
+    name
+      ? "Write this exact name, preserving spelling and accents: " + JSON.stringify(name) + ". Center it in the LEFT half and make it the primary text. Do not put it on the right half."
+      : "The customer supplied no name. Do not invent a name.",
+    phrase
+      ? "Write this exact phrase, preserving spelling, accents, and punctuation: " + JSON.stringify(phrase) + ". Place it below the name in the LEFT half when a name is supplied; otherwise center the phrase in the LEFT half. Do not put it on the right half."
+      : "The customer supplied no phrase. Do not invent a phrase.",
+    "Do not add any other words, dates, captions, initials, or decorative lettering. Center the complete text arrangement inside its own left 1200 x 960 panel. Center the full illustration inside its own right 1200 x 960 panel. Each composition should occupy about 80% of its panel area, remain separate, and never cross the center split.",
+    "Use a clean pure-white background. Keep about 5% clear margin around each panel, especially all four corners. No part of the name, phrase, or important subject may be cropped by the canvas or end abruptly at either outer edge; let minor decorative strokes taper naturally into white.",
+    "The three options must use visibly distinct drawing techniques and compositions. Do not make a contact sheet or combine multiple styles in one output.",
+    "Do not reproduce any signature, artist name, watermark, logo, brand, copyright notice, website name, URL, social handle, QR code, or source attribution visible in either supplied image. Omit those marks completely.",
     "Keep the artwork clean, balanced, legible, original, and suitable for high-resolution sublimation printing on a white ceramic mug.",
-  ].join("\n");
+  ];
+  return lines.filter(Boolean).join("\n");
 }
 
 function makeMockupPrompt(side: Side): string {
@@ -1131,6 +1177,9 @@ async function cleanupExpiredPublicAssets(
     ).map((item) => item.path));
     const referenceExpired = Boolean(row.reference_path && !row.input.referenceDeletedAt &&
       Date.parse(row.created_at) < cutoff);
+    const styleReferencePath = row.input.styleReferencePath;
+    const styleReferenceExpired = Boolean(styleReferencePath && !row.input.styleReferenceDeletedAt &&
+      Date.parse(row.created_at) < cutoff);
     const mockupReferences = row.input.mockupReferencePaths;
     const mockupReferencesExpired = Boolean(mockupReferences && !mockupReferences.deletedAt &&
       Date.parse(mockupReferences.createdAt || row.created_at) < cutoff);
@@ -1138,6 +1187,7 @@ async function cleanupExpiredPublicAssets(
       ...versions.filter((item) => expiredVersions.has(item.version)).map((item) => item.path),
       ...mockups.filter((item) => expiredMockups.has(item.path)).map((item) => item.path),
       ...(referenceExpired && row.reference_path ? [row.reference_path] : []),
+      ...(styleReferenceExpired && styleReferencePath ? [styleReferencePath] : []),
       ...(mockupReferencesExpired && mockupReferences
         ? [mockupReferences.leftPath, mockupReferences.rightPath]
         : []),
@@ -1160,6 +1210,7 @@ async function cleanupExpiredPublicAssets(
     const input: StudioInput = {
       ...row.input,
       ...(referenceExpired ? { referenceDeletedAt: deletedAt } : {}),
+      ...(styleReferenceExpired ? { styleReferencePath: null, styleReferenceDeletedAt: deletedAt } : {}),
       ...(mockupReferencesExpired && mockupReferences
         ? { mockupReferencePaths: { ...mockupReferences, deletedAt } }
         : {}),
@@ -1171,7 +1222,8 @@ async function cleanupExpiredPublicAssets(
     const allMockupsExpired = nextMockups.every((item) =>
       item.deletedAt || Date.parse(item.createdAt || row.created_at) < cutoff
     );
-    const sourceExpired = !row.reference_path || referenceExpired || input.referenceDeletedAt;
+    const sourceExpired = (!row.reference_path || referenceExpired || input.referenceDeletedAt) &&
+      (!styleReferencePath || styleReferenceExpired || input.styleReferenceDeletedAt);
     const mockupSourcesExpired = !input.mockupReferencePaths || input.mockupReferencePaths.deletedAt ||
       Date.parse(input.mockupReferencePaths.createdAt || row.created_at) < cutoff;
     if (allArtworkExpired && allMockupsExpired && sourceExpired && mockupSourcesExpired) {
@@ -1210,7 +1262,7 @@ async function startJob(
   sessionId: string,
   form: FormData,
 ): Promise<Response> {
-  const { input, reference } = await parseInput(form);
+  const { input, reference, styleReference } = await parseInput(form);
   if (input.publicRequest) {
     let customerName = "";
     let customerEmail = "";
@@ -1227,7 +1279,8 @@ async function startJob(
     input.customerContact = { name: customerName, email: customerEmail, whatsapp: "", customerId };
     if (input.publicRequest.theme) {
       input.publicGeneration = { phase: "art", variantIndex: 1 };
-      input.mandatoryText = [input.publicRequest.mugName || input.publicRequest.name || ""];
+      input.mandatoryText = [input.publicRequest.name || input.publicRequest.mugName, input.publicRequest.phrase]
+        .filter((text): text is string => Boolean(text?.trim()));
     }
   }
   const { data, error } = await adminClient.from(TABLE).insert({
@@ -1244,6 +1297,8 @@ async function startJob(
     return json({ error: "studio_job_start_failed" }, 500);
   }
   let job = data as JobRow;
+  const uploadedPaths: string[] = [];
+  let referencePath: string | null = null;
 
   if (reference) {
     const path = job.id + "/reference." + safeExtension(reference.mimeType);
@@ -1259,12 +1314,43 @@ async function startJob(
       }).eq("id", job.id);
       return json({ error: "studio_job_start_failed" }, 500);
     }
+    referencePath = path;
+    uploadedPaths.push(path);
+  }
+
+  if (styleReference) {
+    const path = job.id + "/style-reference." + safeExtension(styleReference.mimeType);
+    const { error: uploadError } = await adminClient.storage.from(BUCKET).upload(path, styleReference.bytes, {
+      contentType: styleReference.mimeType,
+      upsert: false,
+    });
+    if (uploadError) {
+      if (uploadedPaths.length) await adminClient.storage.from(BUCKET).remove(uploadedPaths);
+      await adminClient.from(TABLE).update({
+        status: "failed",
+        error_code: "studio_style_reference_upload_failed",
+        updated_at: new Date().toISOString(),
+      }).eq("id", job.id);
+      return json({ error: "studio_job_start_failed" }, 500);
+    }
+    input.styleReferencePath = path;
+    uploadedPaths.push(path);
+  }
+
+  if (uploadedPaths.length) {
     const { data: updated, error: updateError } = await adminClient.from(TABLE)
-      .update({ reference_path: path, updated_at: new Date().toISOString() })
+      .update({
+        ...(referencePath ? { reference_path: referencePath } : {}),
+        input,
+        updated_at: new Date().toISOString(),
+      })
       .eq("id", job.id)
       .select("*")
       .single();
-    if (updateError || !updated) return json({ error: "studio_job_start_failed" }, 500);
+    if (updateError || !updated) {
+      await adminClient.storage.from(BUCKET).remove(uploadedPaths);
+      return json({ error: "studio_job_start_failed" }, 500);
+    }
     job = updated as JobRow;
   }
 
@@ -1351,13 +1437,23 @@ async function advanceJob(
         if (!job.reference_path) throw new Error("studio_reference_missing");
         const referenceMime = job.reference_path.endsWith(".jpg") ? "image/jpeg"
           : job.reference_path.endsWith(".webp") ? "image/webp" : "image/png";
-        const reference: ReferenceImage = {
+        const imageReferences: ReferenceImage[] = [{
           bytes: await downloadPrivate(adminClient, job.reference_path),
-          fileName: "foto-enviada." + job.reference_path.split(".").pop(),
+          fileName: "foto-do-cliente." + job.reference_path.split(".").pop(),
           mimeType: referenceMime,
-        };
+        }];
+        if (job.input.styleReferencePath) {
+          const path = job.input.styleReferencePath;
+          const styleMime = path.endsWith(".jpg") || path.endsWith(".jpeg") ? "image/jpeg"
+            : path.endsWith(".png") ? "image/png" : "image/webp";
+          imageReferences.push({
+            bytes: await downloadPrivate(adminClient, path),
+            fileName: "modelo-visual." + path.split(".").pop(),
+            mimeType: styleMime,
+          });
+        }
         const imagePrompt = makePublicArtPrompt(job.input, variantIndex);
-        const generated = await openAIImage(apiKey, imagePrompt, ART_SIZE, reference);
+        const generated = await openAIImage(apiKey, imagePrompt, ART_SIZE, imageReferences);
         const version = variantIndex;
         const path = job.id + "/art-v" + version + ".webp";
         await uploadPrivate(adminClient, path, generated, "image/webp");
