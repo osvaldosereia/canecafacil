@@ -1,0 +1,33 @@
+CREATE TABLE `orders` (
+	`id` text PRIMARY KEY NOT NULL,
+	`public_token` text NOT NULL,
+	`personalization_id` text NOT NULL,
+	`status` text DEFAULT 'awaiting_payment' NOT NULL,
+	`payment_status` text DEFAULT 'pending' NOT NULL,
+	`quantity` integer DEFAULT 1 NOT NULL,
+	`unit_price_cents` integer NOT NULL,
+	`subtotal_cents` integer NOT NULL,
+	`shipping_price_cents` integer DEFAULT 0 NOT NULL,
+	`total_cents` integer NOT NULL,
+	`shipping_service_id` text NOT NULL,
+	`shipping_service_name` text NOT NULL,
+	`shipping_company` text NOT NULL,
+	`shipping_min_days` integer,
+	`shipping_max_days` integer,
+	`postal_code` text DEFAULT '' NOT NULL,
+	`address` text DEFAULT '' NOT NULL,
+	`address_number` text DEFAULT '' NOT NULL,
+	`complement` text DEFAULT '' NOT NULL,
+	`district` text DEFAULT '' NOT NULL,
+	`city` text DEFAULT '' NOT NULL,
+	`state` text DEFAULT '' NOT NULL,
+	`payment_provider` text DEFAULT 'mercado_pago' NOT NULL,
+	`payment_preference_id` text,
+	`payment_id` text,
+	`checkout_url` text,
+	`mode` text DEFAULT 'demo' NOT NULL,
+	`created_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	`updated_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `orders_public_token_unique` ON `orders` (`public_token`);

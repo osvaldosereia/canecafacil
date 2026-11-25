@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1787056013991,
+      "tag": "0000_white_black_tarantula",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787057540492,
+      "tag": "0001_good_green_goblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787058786581,
+      "tag": "0002_optimal_blink",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1787060576565,
+      "tag": "0003_salty_cloak",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1795634007129,
+      "tag": "0004_grey_domino",
+      "breakpoints": true
+    }
+  ]
+}

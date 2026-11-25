@@ -1,0 +1,106 @@
+import { sql } from "drizzle-orm";
+import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+
+export const models = sqliteTable("models", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  sourceJobId: text("source_job_id").unique(),
+  title: text("title").notNull(),
+  category: text("category").notNull(),
+  tags: text("tags").notNull().default("[]"),
+  imageUrl: text("image_url").notNull().default(""),
+  phrase: text("phrase").notNull(),
+  accent: text("accent").notNull().default("blue"),
+  status: text("status").notNull().default("review"),
+  likes: integer("likes").notNull().default(0),
+  uses: integer("uses").notNull().default(0),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const personalizations = sqliteTable("personalizations", {
+  id: text("id").primaryKey(),
+  publicToken: text("public_token").notNull().unique(),
+  modelId: integer("model_id").notNull(),
+  modelTitle: text("model_title").notNull(),
+  sourceImage: text("source_image").notNull().default(""),
+  artName: text("art_name").notNull(),
+  phrase: text("phrase").notNull(),
+  customerName: text("customer_name").notNull(),
+  customerEmail: text("customer_email").notNull(),
+  customerPhone: text("customer_phone").notNull(),
+  status: text("status").notNull().default("queued"),
+  mode: text("mode").notNull().default("live"),
+  providerJobId: text("provider_job_id"),
+  artImageUrl: text("art_image_url"),
+  mugMockupUrl: text("mug_mockup_url"),
+  error: text("error"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const orders = sqliteTable("orders", {
+  id: text("id").primaryKey(),
+  publicToken: text("public_token").notNull().unique(),
+  personalizationId: text("personalization_id").notNull(),
+  status: text("status").notNull().default("awaiting_payment"),
+  paymentStatus: text("payment_status").notNull().default("pending"),
+  quantity: integer("quantity").notNull().default(1),
+  unitPriceCents: integer("unit_price_cents").notNull(),
+  subtotalCents: integer("subtotal_cents").notNull(),
+  shippingPriceCents: integer("shipping_price_cents").notNull().default(0),
+  totalCents: integer("total_cents").notNull(),
+  shippingServiceId: text("shipping_service_id").notNull(),
+  shippingServiceName: text("shipping_service_name").notNull(),
+  shippingCompany: text("shipping_company").notNull(),
+  shippingMinDays: integer("shipping_min_days"),
+  shippingMaxDays: integer("shipping_max_days"),
+  postalCode: text("postal_code").notNull().default(""),
+  address: text("address").notNull().default(""),
+  addressNumber: text("address_number").notNull().default(""),
+  complement: text("complement").notNull().default(""),
+  district: text("district").notNull().default(""),
+  city: text("city").notNull().default(""),
+  state: text("state").notNull().default(""),
+  paymentProvider: text("payment_provider").notNull().default("mercado_pago"),
+  paymentPreferenceId: text("payment_preference_id"),
+  paymentId: text("payment_id"),
+  checkoutUrl: text("checkout_url"),
+  trackingCode: text("tracking_code").notNull().default(""),
+  trackingUrl: text("tracking_url").notNull().default(""),
+  adminNotes: text("admin_notes").notNull().default(""),
+  mode: text("mode").notNull().default("demo"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const siteContent = sqliteTable("site_content", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const b2bLeads = sqliteTable("b2b_leads", {
+  id: text("id").primaryKey(),
+  company: text("company").notNull(),
+  sector: text("sector").notNull(),
+  purpose: text("purpose").notNull(),
+  quantity: integer("quantity").notNull(),
+  city: text("city").notNull().default(""),
+  businessPhone: text("business_phone").notNull().default(""),
+  website: text("website").notNull().default(""),
+  customizationIdea: text("customization_idea").notNull().default(""),
+  contactName: text("contact_name").notNull(),
+  contactPhone: text("contact_phone").notNull(),
+  jobId: text("job_id"),
+  status: text("status").notNull().default("new"),
+  notes: text("notes").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const githubCredentials = sqliteTable("github_credentials", {
+  id: text("id").primaryKey(),
+  encryptedToken: text("encrypted_token").notNull(),
+  iv: text("iv").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
