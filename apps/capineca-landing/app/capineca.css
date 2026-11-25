@@ -68,6 +68,7 @@ body { margin: 0; background: var(--cn-cream); color: var(--cn-ink); }
 .idea-card.lavender { background: #e8dfd8; }
 .idea-image { aspect-ratio: 1; overflow: hidden; padding: 8px; }
 .idea-image canvas { width: 100%; height: 100%; display: block; object-fit: cover; transition: transform .45s; }
+.idea-image .portfolio-mug { width: 100%; height: 100%; display: block; object-fit: contain; background: #f0e8da; }
 .idea-card:hover .idea-image canvas { transform: scale(1.035); }
 .idea-meta { padding: 9px 21px 22px; }
 .idea-meta>span { color: #8c493b; font-size: 8px; font-weight: 800; letter-spacing: 1.1px; text-transform: uppercase; }
@@ -396,7 +397,7 @@ body { margin: 0; background: var(--cn-cream); color: var(--cn-ink); }
 .cn-admin-sample-grid { padding: 15px; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 13px; }
 .cn-admin-sample-grid article { min-width: 0; overflow: hidden; display: grid; grid-template-columns: minmax(145px,.78fr) minmax(0,1.22fr); border: 1px solid #e8dfd4; background: #fffefa; }
 .sample-preview { min-width: 0; min-height: 100%; display: grid; place-items: center; overflow: hidden; background: #f0e8da; }
-.sample-preview>img { width: 100%; height: 100%; min-height: 210px; display: block; object-fit: cover; }
+.sample-preview>img { width: 100%; height: 100%; min-height: 210px; display: block; object-fit: contain; }
 .sample-preview>div { padding: 12px; display: grid; justify-items: center; gap: 6px; text-align: center; }
 .sample-preview>div img { width: 100%; height: auto; display: block; object-fit: contain; }
 .sample-preview b { font: 500 12px Georgia,serif; }
